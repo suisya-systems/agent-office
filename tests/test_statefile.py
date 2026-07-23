@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from office import statefile
-from office.cli import pick_blocked, visible_panes
+from office.actions import pick_blocked, visible_panes
 from office.config import Config
 from office.state import OfficeState
 

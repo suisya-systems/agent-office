@@ -1,12 +1,19 @@
-"""Office - the resident pane: event loop wiring Subscriber + Input + Renderer.
+"""Office - the resident pane: the event loop that drives everything else.
 
-design.md sections 2 and 6. Single process; the Subscriber, InputReader and
-Notifier each run a thread and feed one shared queue, while this loop owns the
-OfficeState (single-writer) and redraws on events or on the animation tick.
+design.md sections 2 and 6. This module owns the loop and nothing else: the
+terminal is the Screen's, frame content is the Renderer's, escalation policy is
+the Escalator's, and each source of events runs in its own thread.
 
-The Escalator (section 7) and the state.json writer (section 8) are driven from
-the same tick. Escalation is deliberately split in two: the Escalator decides
-*what* to send with no I/O at all, and the Notifier thread does the sending, so
+**Threading contract.** Four threads feed one `queue.Queue` of (kind, payload)
+tuples - Subscriber (herdr events), Reconciler (periodic pane.list), InputReader
+(stdin) and Notifier (toast results). None of them touch OfficeState, the
+Escalator or the Renderer. This loop is the *only* writer of OfficeState and the
+only caller of Escalator.tick()/on_result(), so no lock is needed anywhere: the
+queue is the entire thread boundary.
+
+The Escalator (section 7) and the state.json writer (section 8) run on the
+animation tick. Escalation is deliberately split in two - the Escalator decides
+*what* to send with no I/O at all and the Notifier thread does the sending - so
 a slow or rate-limited notification.show can never stall the render loop.
 """
 
@@ -14,64 +21,25 @@ import os
 import queue
 import signal
 import sys
-import threading
 import time
 
-from . import protocol, statefile
+from . import statefile
 from .config import Config
 from .config import load as load_config
 from .escalator import Escalator
 from .input import InputReader
+from .notifier import Notifier
 from .reconciler import Reconciler
 from .renderer import Renderer, detect_caps, format_name
+from .screen import Screen
 from .state import OfficeState
 from .subscriber import Subscriber
+from . import protocol
 
 MIN_REDRAW_S = 0.04                                # cap redraws at ~25 fps
 
 TOAST_HINT = ("toasts are off: set [ui.toast] delivery = \"herdr\" "
               "in your herdr config")
-
-
-class Notifier:
-    """Background sender for notification.show (never blocks the render loop).
-
-    Results come back through the office queue as ("notify_result", (note,
-    reason)) so the Escalator's retry/rollback logic still runs single-writer
-    on the main loop.
-    """
-
-    def __init__(self, sock_path, out_queue):
-        self.sock_path = sock_path
-        self.out = out_queue
-        self._q = queue.Queue()
-        self._thread = None
-
-    def start(self):
-        self._thread = threading.Thread(target=self._loop, daemon=True,
-                                        name="office-notifier")
-        self._thread.start()
-
-    def stop(self):
-        self._q.put(None)
-        if self._thread:
-            self._thread.join(timeout=2.0)
-
-    def send(self, note):
-        self._q.put(note)
-
-    def _loop(self):
-        while True:
-            note = self._q.get()
-            if note is None:
-                return
-            try:
-                reason = protocol.notification_show(
-                    self.sock_path, note.title, note.body, note.sound)
-            except Exception as exc:                       # noqa: BLE001
-                reason = "error"
-                self.out.put(("log", "toast failed: %s" % exc))
-            self.out.put(("notify_result", (note, reason)))
 
 
 class Office:
@@ -89,6 +57,7 @@ class Office:
         self.reconciler = Reconciler(sock_path, self.q)
         self.input = InputReader(self.q)
         self.notifier = Notifier(sock_path, self.q)
+        self.screen = Screen()
         self.escalator = Escalator(
             threshold_s=self.config.blocked_threshold_s,
             renotify_s=self.config.renotify_interval_s,
@@ -118,38 +87,18 @@ class Office:
         self.config_warning = "; ".join(self.config.warnings)
         self.status_line = ""
         self.toast_hint = ""
-        self._resize = True
-
-    # -- terminal -------------------------------------------------------
-
-    def _enter_screen(self):
-        sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J")   # alt screen, hide cursor
-        sys.stdout.flush()
-
-    def _leave_screen(self):
-        sys.stdout.write("\x1b[?25h\x1b[?1049l")          # show cursor, main screen
-        sys.stdout.flush()
-
-    def _on_winch(self, *_):
-        self._resize = True
-
-    def _size(self):
-        import shutil
-        sz = shutil.get_terminal_size((100, 30))
-        return sz.columns, sz.lines
 
     # -- main loop ------------------------------------------------------
 
     def run(self):
-        for signame, handler in (("SIGTERM", lambda *_: self._quit()),
-                                 ("SIGWINCH", self._on_winch)):
-            sig = getattr(signal, signame, None)
-            if sig is not None:
-                try:
-                    signal.signal(sig, handler)
-                except (OSError, ValueError):     # not main thread / unsupported
-                    pass
-        self._enter_screen()
+        sigterm = getattr(signal, "SIGTERM", None)
+        if sigterm is not None:
+            try:
+                signal.signal(sigterm, lambda *_: self._quit())
+            except (OSError, ValueError):         # not main thread / unsupported
+                pass
+        self.screen.install_resize_handler()
+        self.screen.open()
         self.input.start()
         self.notifier.start()
         self.subscriber.start()
@@ -160,7 +109,7 @@ class Office:
             while self.running:
                 now = time.monotonic()
                 timeout = max(0.0, next_tick - now)
-                dirty = self._resize
+                dirty = self.screen.resized
                 try:
                     item = self.q.get(timeout=timeout)
                     dirty = True
@@ -184,7 +133,7 @@ class Office:
                 if dirty and now - last_render >= MIN_REDRAW_S:
                     self._draw()
                     last_render = now
-                    self._resize = False
+                    self.screen.clear_resized()
         except KeyboardInterrupt:
             pass
         finally:
@@ -196,7 +145,7 @@ class Office:
             # rather than whatever the last periodic write happened to hold.
             self.writer.write_stopped(self.state,
                                       self.escalator.escalated_ids())
-            self._leave_screen()
+            self.screen.close()
 
     def _quit(self):
         self.running = False
@@ -209,14 +158,11 @@ class Office:
             self.notifier.send(note)
 
     def _draw(self):
-        cols, rows = self._size()
-        frame = self.renderer.render(self.state, cols, rows, self.frame,
-                                     muted=self.muted,
-                                     show_help=self.show_help,
-                                     escalated=self.escalator.escalated_ids(),
-                                     status=self._status())
-        sys.stdout.write(frame)
-        sys.stdout.flush()
+        cols, rows = self.screen.size()
+        self.screen.write(self.renderer.render(
+            self.state, cols, rows, self.frame,
+            muted=self.muted, show_help=self.show_help,
+            escalated=self.escalator.escalated_ids(), status=self._status()))
 
     def _status(self):
         parts = [p for p in (self.config_warning, self.toast_hint,
@@ -273,7 +219,7 @@ class Office:
             self.status_line = "toast %s; retrying" % reason
 
     def _handle_key(self, name):
-        cols, _ = self._size()
+        cols, _ = self.screen.size()
         per_row = self.renderer.per_row(cols)
         if name in ("q",):
             self._quit()

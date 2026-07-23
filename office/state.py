@@ -15,6 +15,15 @@ STATUSES = ("idle", "working", "blocked", "done", "unknown")
 
 @dataclass
 class Desk:
+    """One agent's desk.
+
+    **Ownership: OfficeState is the only writer.** Desks are handed out live
+    (not copied) to the Renderer, the Escalator and the state file writer,
+    which all treat them as read-only snapshots - a reader that mutated one
+    would be writing to the model from outside the single-writer loop, and the
+    change would not survive the next authoritative pane.list reconcile.
+    """
+
     pane_id: str
     workspace_id: str
     tab_id: str = ""
@@ -75,16 +84,20 @@ class OfficeState:
         return agent is not None
 
     def _workspace_included(self, workspace_id: str) -> bool:
-        """Match [include].workspaces globs against the workspace label.
-
-        Room labels arrive from workspace.list at startup and from
-        workspace.renamed afterwards; until one is known the raw workspace_id
-        is matched instead, so a glob is never silently treated as "matches
-        everything".
-        """
-        label = self.rooms.get(workspace_id, workspace_id)
-        return any(fnmatch.fnmatchcase(label, glob)
+        """Match [include].workspaces globs against the workspace label."""
+        return any(fnmatch.fnmatchcase(self.room_label(workspace_id), glob)
                    for glob in self.workspace_globs)
+
+    def room_label(self, workspace_id: str) -> str:
+        """Display label for a workspace, falling back to its raw id.
+
+        The single definition of that fallback: islands, the compact view, the
+        state file and the [include] globs must all name a room the same way.
+        Labels arrive from workspace.list at startup and workspace.renamed
+        afterwards, so before one is known the id stands in - which also means
+        a glob is never silently treated as "matches everything".
+        """
+        return self.rooms.get(workspace_id, workspace_id)
 
     def ingest_pane(self, info: dict) -> None:
         """Upsert from a full PaneInfo (pane.list / pane.created / .updated).
@@ -242,7 +255,7 @@ class OfficeState:
         for desk in self.ordered_desks():
             if current is None or current[0] != desk.workspace_id:
                 current = (desk.workspace_id,
-                           self.rooms.get(desk.workspace_id, desk.workspace_id),
+                           self.room_label(desk.workspace_id),
                            [])
                 out.append(current)
             current[2].append(desk)

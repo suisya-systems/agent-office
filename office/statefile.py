@@ -214,8 +214,7 @@ class StateWriter:
             rows.append({
                 "pane_id": desk.pane_id,
                 "workspace_id": desk.workspace_id,
-                "workspace_label": state.rooms.get(desk.workspace_id,
-                                                   desk.workspace_id),
+                "workspace_label": state.room_label(desk.workspace_id),
                 "display_name": desk.display_name,
                 "agent": desk.agent,
                 "status": desk.status,

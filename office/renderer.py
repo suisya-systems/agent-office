@@ -230,8 +230,7 @@ class Renderer:
             foc = "*" if desk.pane_id == state.focused_pane_id else " "
             dot = color + "●" + RESET if self.tier else color + "*" + RESET
             name = format_name(desk.display_name, self.name_template)
-            room = format_name(state.rooms.get(desk.workspace_id,
-                                               desk.workspace_id),
+            room = format_name(state.room_label(desk.workspace_id),
                                self.name_template)
             text = "%s %s %s %-10s %s/%s" % (sel, dot, foc,
                                              label[:10], room[:14], name)
