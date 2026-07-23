@@ -15,6 +15,8 @@ import sys
 
 from . import office, protocol
 
+PANE_TITLE = "Agent Office"          # manifest [[panes]].title == the pane label
+
 USAGE = """Agent Office - herdr plugin (Stage 2 core)
 
 usage: python3 -m office [run|action-open|action-jump-blocked]
@@ -36,6 +38,17 @@ def _sock():
 def action_open():
     sock = _sock()
     plugin_id = os.environ.get("HERDR_PLUGIN_ID", "agent-office")
+    # Focus an existing office pane if one is open, otherwise open a new one.
+    # Without state.json (a later stage) the office pane is identified by its
+    # label, which defaults to the manifest pane title.
+    try:
+        for p in protocol.pane_list(sock):
+            if p.get("label") == PANE_TITLE and p.get("pane_id"):
+                protocol.request(sock, "plugin.pane.focus",
+                                 {"pane_id": p["pane_id"]})
+                return 0
+    except Exception:                                    # noqa: BLE001
+        pass                                             # fall through to open
     try:
         protocol.request(sock, "plugin.pane.open",
                          {"plugin_id": plugin_id, "entrypoint": "office",

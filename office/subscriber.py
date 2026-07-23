@@ -238,7 +238,10 @@ class Subscriber:
 
     def _handle_l(self, obj):
         data = obj.get("data") or {}
-        kind = data.get("type") or obj.get("event")
+        # herdr 0.7.4 delivers broadcast events with underscore names in
+        # data.type (pane_created, ...). Normalize dotted variants too so we
+        # stay robust if a herdr build echoes the subscribed dotted name.
+        kind = (data.get("type") or obj.get("event") or "").replace(".", "_")
         if kind in ("pane_created", "pane_updated"):
             pane = data.get("pane")
             if pane and pane.get("pane_id"):
