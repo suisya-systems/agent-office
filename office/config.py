@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Tuple
 
-from . import minitoml
+from . import minitoml, themes
 
 try:                                              # Python 3.11+
     import tomllib as _tomllib
@@ -31,7 +31,7 @@ RENDERERS = ("auto", "unicode", "ascii", "kitty")
 SOUNDS = ("none", "done", "request")
 NAME_TEMPLATES = ("{name}", "{name:last-segment}")
 FPS_MIN, FPS_MAX = 1, 10
-THEMES = ("default",)
+THEMES = themes.NAMES
 
 _TABLES = ("office", "escalation", "include")
 
@@ -149,11 +149,10 @@ def from_mapping(data, path="") -> Config:
                         "notify_done"))
     _warn_unknown_keys(include, "include", warnings,
                        ("workspaces", "exclude_agents"))
-    if values["renderer"] == "kitty":
-        # design.md section 5: tier 2 is opt-in and not implemented yet
-        # (issue #6). Fall back with a warning rather than a blank office.
-        warnings.append("renderer=kitty is not implemented yet; using unicode")
-        values["renderer"] = "unicode"
+    # renderer="kitty" is taken at face value here. Whether tier 2 is actually
+    # available is a question for the running herdr, not for the config file
+    # (`[experimental] kitty_graphics` is off by default), so office.run()
+    # probes pane.graphics.info and falls back to unicode with its own warning.
     return Config(path=path, warnings=tuple(warnings), **values)
 
 
