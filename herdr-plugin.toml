@@ -1,0 +1,29 @@
+# Agent Office - herdr plugin manifest (design.md section 9).
+# Stage 2 core: linux/macOS only (Windows is a later stage). Pure Python
+# stdlib, so no [[build]] step is needed - `herdr plugin install` just checks
+# out the repo and runs the panes/actions below with CWD = plugin root.
+
+id = "agent-office"
+name = "Agent Office"
+version = "0.1.0"
+description = "Your agent fleet as a pixel-art office: see who's working, who's stuck, jump to them."
+min_herdr_version = "0.7.4"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "office"
+title = "Agent Office"
+placement = "tab"                 # horizontal layout suits a tab/zoomed pane
+command = ["python3", "-m", "office", "run"]
+
+[[actions]]
+id = "open"
+title = "Open Agent Office"
+contexts = ["global"]
+command = ["python3", "-m", "office", "action-open"]
+
+[[actions]]
+id = "jump-blocked"
+title = "Jump to longest-blocked agent"
+contexts = ["global"]
+command = ["python3", "-m", "office", "action-jump-blocked"]
