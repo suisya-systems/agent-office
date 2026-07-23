@@ -188,7 +188,7 @@ class Office:
         if kind == "key":
             self._handle_key(payload)
         elif kind == "snapshot":
-            self._apply_snapshot(payload)
+            self._apply_snapshot(payload, seed=True)
         elif kind == "pane":
             self.state.ingest_pane(payload)
         elif kind == "closed":
@@ -214,9 +214,17 @@ class Office:
         elif kind == "log":
             self.status_line = payload
 
-    def _apply_snapshot(self, panes):
+    def _apply_snapshot(self, panes, seed=False):
+        """Apply a pane.list; `seed` marks the authoritative Subscriber path.
+
+        Only that path may spend the recovered blocked_since: a refresh the
+        user asked for with `a` can land before the fleet is fully known -
+        before workspace labels have arrived, say - and would otherwise burn
+        the seed on a partial view, handing an already-stuck agent a fresh
+        countdown.
+        """
         self.state.reconcile_snapshot(panes)
-        if self._seed_blocked:
+        if seed and self._seed_blocked:
             # design.md section 7: adopt the previous run's blocked_since so an
             # agent stuck before the office opened is not given a fresh
             # countdown. Applies once, on the first snapshot.
@@ -293,15 +301,21 @@ class Office:
         self.commander.list_panes()
 
     def _handle_action_result(self, name, result, error):
-        """Outcome of a Commander action, one socket round-trip after the key."""
+        """Outcome of a Commander action, one socket round-trip after the key.
+
+        Only the refresh puts a pending notice up, so only the refresh's own
+        result takes it down: a jump that happens to land in between says its
+        piece without cancelling a refresh that is still in flight.
+        """
         if error:
-            self.pending_status = ""
+            if name == PANE_LIST:
+                self.pending_status = ""      # superseded by the failure below
             self.status_line = "%s failed: %s" % (
                 "jump" if name == FOCUS else "filter refresh", error)
             return
         if name == PANE_LIST:
             self._apply_snapshot(result)
-        self._clear_pending()
+            self._clear_pending()
 
     def _set_pending(self, text):
         self.pending_status = text

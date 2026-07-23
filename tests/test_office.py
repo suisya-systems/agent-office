@@ -141,6 +141,27 @@ class ActionFeedbackTest(unittest.TestCase):
         self.assertNotIn("refreshing", office._status())
         self.assertIn("filter refresh failed", office._status())
 
+    def test_a_jump_landing_mid_refresh_leaves_the_notice_alone(self):
+        # Enter after `a`: the focus result comes back first, but the fleet
+        # the refresh will bring is still in flight, so the notice stands.
+        office = self.office()
+        office._handle(("key", "a"))
+        office._handle(("action", ("focus", None, None)))
+        self.assertIn("refreshing", office._status())
+
+    def test_a_user_refresh_does_not_spend_the_startup_seed(self):
+        # design.md section 7: the recovered blocked_since belongs to the
+        # authoritative startup snapshot. An `a` refresh can arrive first (and
+        # on a partial fleet), and must not consume it - the desk would then
+        # start a fresh 90s countdown instead of inheriting its real one.
+        office = self.office()
+        office._seed_blocked = {"p1": 1000.0}
+        panes = [{"pane_id": "p1", "agent": "claude", "agent_status": "blocked"}]
+        office._handle(("action", ("pane_list", panes, None)))
+        self.assertNotEqual(office.state.desks["p1"].blocked_since, 1000.0)
+        office._handle(("snapshot", panes))
+        self.assertEqual(office.state.desks["p1"].blocked_since, 1000.0)
+
     def test_a_newer_notice_outlives_the_pending_one(self):
         # The refresh result must clear its own message, not whatever the
         # subscriber or notifier put up while the socket was in flight.
