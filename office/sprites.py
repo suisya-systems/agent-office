@@ -97,6 +97,15 @@ BLOCKED_F1 = _patch(BASE, [   # bubble blinks off; hand stays raised
     (4, 8, "B"),
 ])
 
+# ESCALATED overlay (character-states.md section 1): past blocked_threshold_s
+# the neutral "!" becomes a wider alert-red "!!", in sync with the toast.
+BLOCKED_ESC = _patch(BASE, [
+    (1, 2, "WWWW"),
+    (2, 2, "WXXW"),
+    (3, 8, "S"),
+    (4, 8, "B"),
+])
+
 DONE = _patch(BASE, [
     (0, 10, ".V"),
     (1, 8, "V.V"),
@@ -110,6 +119,7 @@ VISUAL = {
     "idle":    (IDLE, IDLE_F1, "shirt_idle", "screen_off"),
     "working": (WORKING, WORKING_F1, "shirt_working", "screen_on"),
     "blocked": (BLOCKED, BLOCKED_F1, "shirt_blocked", "screen_on"),
+    "blocked_escalated": (BLOCKED_ESC, BLOCKED_F1, "shirt_blocked", "screen_on"),
     "done":    (DONE, DONE, "shirt_done", "screen_off"),
 }
 
@@ -178,6 +188,7 @@ ASCII_ART = {
     "idle":    ["         ", "   o   c ", "  /|\\    ", " [_____] "],
     "working": ["         ", "   o     ", "  /|\\ ## ", " [_____] "],
     "blocked": ["    !    ", "   o/    ", "  /|     ", " [_____] "],
+    "blocked_escalated": ["   !!    ", "   o/    ", "  /|     ", " [_____] "],
     "done":    ["    *    ", "   o     ", "  /|\\    ", " [_____] "],
 }
 ASCII_W = 9
@@ -186,6 +197,6 @@ ASCII_ROWS = 4
 
 def desk_tier0_lines(visual_state, frame):
     art = list(ASCII_ART[visual_state])
-    if visual_state == "blocked" and frame % 2:
+    if visual_state.startswith("blocked") and frame % 2:
         art[0] = " " * ASCII_W          # bubble blink
     return art

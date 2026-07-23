@@ -17,6 +17,7 @@ from . import sprites
 
 RESET = "\x1b[0m"
 ACCENT = "\x1b[38;2;80;220;220m"        # cyan, selection / header
+ALERT = "\x1b[38;2;255;85;85m"          # red, ESCALATED (character-states.md)
 DIM = "\x1b[2m"
 BOLD = "\x1b[1m"
 
@@ -81,15 +82,24 @@ class Renderer:
         """Desks per row for the current width (used for cursor movement)."""
         return max(1, (max(20, cols) + 1) // (self.block_w + 1))
 
-    def render(self, state, cols, rows, frame=0, muted=False, show_help=False):
+    def render(self, state, cols, rows, frame=0, muted=False, show_help=False,
+               escalated=(), status=""):
         cols = max(20, cols)
         rows = max(6, rows)
+        escalated = frozenset(escalated)
+        # A status line (config warnings, toast delivery hint, last error)
+        # takes the bottom row when there is something to say.
+        inner = max(3, rows - 1) if status else rows
         if show_help:
-            body = self._help_lines(cols, rows)
+            body = self._help_lines(cols, inner)
         elif cols < MIN_COLS or rows < MIN_ROWS or self.block_w + 1 > cols:
-            body = self._compact(state, cols, rows, frame)
+            body = self._compact(state, cols, inner, frame, escalated)
         else:
-            body = self._full(state, cols, rows, frame, muted)
+            body = self._full(state, cols, inner, frame, muted, escalated)
+        if status:
+            body = list(body[:inner])
+            body += [""] * (inner - len(body))
+            body.append(DIM + status[:cols] + RESET)
         return self._paint(body, rows)
 
     # -- frame assembly -------------------------------------------------
@@ -119,15 +129,17 @@ class Renderer:
 
     # -- full layout ----------------------------------------------------
 
-    def _full(self, state, cols, rows, frame, muted):
+    def _full(self, state, cols, rows, frame, muted, escalated=frozenset()):
         per_row = max(1, (cols + 1) // (self.block_w + 1))
         body = []
         anchors = {}                              # pane_id -> line index in body
         for wid, label, desks in state.islands():
-            body.append(DIM + ("[ %s ]" % label)[:cols] + RESET)
+            room = format_name(label, self.name_template)
+            body.append(DIM + ("[ %s ]" % room)[:cols] + RESET)
             for start in range(0, len(desks), per_row):
                 chunk = desks[start:start + per_row]
-                block_lines = [self._desk_block(d, state, frame) for d in chunk]
+                block_lines = [self._desk_block(d, state, frame, escalated)
+                               for d in chunk]
                 for d in chunk:
                     anchors[d.pane_id] = len(body)
                 for line_idx in range(self.block_h):
@@ -153,11 +165,15 @@ class Renderer:
             header = header + ACCENT + hint + RESET
         return [header] + window
 
-    def _desk_block(self, desk, state, frame):
+    def _desk_block(self, desk, state, frame, escalated=frozenset()):
         selected = desk.pane_id == state.selected_pane_id
         focused = desk.pane_id == state.focused_pane_id
         visual, label, color = STATUS_VISUAL.get(desk.status,
                                                  STATUS_VISUAL["unknown"])
+        is_escalated = desk.status == "blocked" and desk.pane_id in escalated
+        if is_escalated:
+            visual = "blocked_escalated"
+            color = ALERT
         phase = frame + (hash(desk.pane_id) & 1)  # desync animation phase
         if self.tier == 0:
             art = sprites.desk_tier0_lines(visual, phase)
@@ -184,8 +200,10 @@ class Renderer:
         plate = (ACCENT if selected else BOLD) + _center(name, self.desk_w) + RESET
         stat_txt = label
         word = desk.state_label_word
-        if desk.status == "blocked" and word:
-            stat_txt = ("! " + word)
+        if desk.status == "blocked":
+            mark = "!!" if is_escalated else "!"
+            stat_txt = ("%s %s" % (mark, word)) if word else ("%s %s"
+                                                              % (mark, label))
         stat = color + _center(stat_txt, self.desk_w) + RESET
 
         lines = [hbar]
@@ -198,7 +216,7 @@ class Renderer:
 
     # -- compact fallback ----------------------------------------------
 
-    def _compact(self, state, cols, rows, frame):
+    def _compact(self, state, cols, rows, frame, escalated=frozenset()):
         body = []
         anchors = {}
         order = state.ordered_desks()
@@ -206,11 +224,14 @@ class Renderer:
             anchors[desk.pane_id] = len(body)
             visual, label, color = STATUS_VISUAL.get(
                 desk.status, STATUS_VISUAL["unknown"])
+            if desk.status == "blocked" and desk.pane_id in escalated:
+                label, color = "blocked!!", ALERT
             sel = ACCENT + ">" + RESET if desk.pane_id == state.selected_pane_id else " "
             foc = "*" if desk.pane_id == state.focused_pane_id else " "
             dot = color + "●" + RESET if self.tier else color + "*" + RESET
             name = format_name(desk.display_name, self.name_template)
-            room = state.rooms.get(desk.workspace_id, desk.workspace_id)
+            room = format_name(state.room_label(desk.workspace_id),
+                               self.name_template)
             text = "%s %s %s %-10s %s/%s" % (sel, dot, foc,
                                              label[:10], room[:14], name)
             body.append(text[:cols + 40])         # allow ANSI overhead
@@ -232,7 +253,7 @@ class Renderer:
             ("b", "jump to the longest-blocked agent"),
             ("Tab", "cycle through blocked agents"),
             ("a", "toggle filter (agents / all)"),
-            ("s", "toggle mute (escalation - Stage 2 item 2)"),
+            ("s", "toggle escalation mute (no toasts while muted)"),
             ("?", "toggle this help"),
             ("q", "close the office pane"),
         ]

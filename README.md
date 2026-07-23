@@ -46,7 +46,80 @@ delivery = "herdr"
 ```
 
 Without it the office view still works — desks, hand-raising, and jump are
-unaffected — but no toasts are delivered.
+unaffected — but no toasts are delivered. If Agent Office sees herdr reject a
+toast because delivery is off, it says so on its status line rather than
+retrying forever.
+
+## Configuration
+
+Agent Office is **zero-config**: with no file at all every setting below falls
+back to its default. To change something, create `config.toml` in the plugin's
+config directory (herdr passes it as `HERDR_PLUGIN_CONFIG_DIR`; typically
+`~/.config/herdr/plugins/agent-office/`). Settings are read once at startup —
+reopen the office pane to apply changes.
+
+```toml
+[office]
+filter = "agents"            # "agents" (only panes with a detected agent) | "all"
+renderer = "auto"            # "auto" | "unicode" (tier 1) | "ascii" (tier 0)
+fps = 2                      # animation ticks per second, 1..10
+theme = "default"            # sprite palette (only "default" so far)
+name_template = "{name}"     # "{name}" | "{name:last-segment}"
+
+[escalation]
+blocked_threshold_s = 90     # blocked for this long -> toast
+renotify_interval_s = 300    # remind every N seconds while still blocked; 0 = never
+sound = "request"            # "request" | "done" | "none"
+notify_done = false          # also toast when an agent finishes
+
+[include]                    # optional narrowing; empty = the whole fleet
+workspaces = []              # globs matched against the workspace label
+exclude_agents = []          # e.g. ["codex"]
+```
+
+Check what your file actually parses to:
+
+```sh
+python3 -m office config-check
+```
+
+A malformed file never stops the office from opening: bad values fall back to
+their defaults and the reason is listed by `config-check` and on the pane's
+status line.
+
+**`name_template`** shortens long names on desk nameplates and room labels.
+`"{name:last-segment}"` keeps only the part after the last `/`, which turns a
+label like `claude-org/8f3a…/g7/project:agent-office/a2` into `a2`.
+
+### Escalation behaviour
+
+A desk that stays `blocked` past `blocked_threshold_s` raises a toast, and its
+speech bubble turns from `!` to a red `!!` on screen. Details worth knowing:
+
+- **Agents that block together share one toast.** After the first desk crosses
+  the threshold there is a 5 second collection window, so three stuck agents
+  produce `✋ 3 agents are waiting`, not three separate toasts.
+- **Reminders continue** every `renotify_interval_s` while the agent is still
+  blocked, labelled `2nd reminder`, `3rd reminder`, and so on.
+- **Unblocking resets everything** — the next block starts a fresh countdown.
+- **Reopening the office pane does not reset the clock.** An agent already
+  blocked at startup keeps the wait time recorded in `state.json`, so a restart
+  does not hand a stuck agent another 90 seconds of silence. After a long
+  outage (5 minutes without the office running) the countdown does start fresh
+  — by then the agent may have unblocked and blocked again unobserved.
+- **`s` mutes escalation** for the session; the desks still show raised hands.
+- If herdr rate-limits a toast, Agent Office backs off 30 seconds and retries.
+
+### Runtime state
+
+The office pane writes `HERDR_PLUGIN_STATE_DIR/state.json` every 10 seconds and
+whenever the desks change. It is what lets `agent-office.jump-blocked` pick the
+genuinely longest-blocked agent and `agent-office.open` focus the office pane
+that is already running.
+
+Both actions still work without it: they only trust the file while an office
+process is actively writing it, and otherwise fall back to ordering by pane id
+and to opening a new pane. Deleting the file is harmless.
 
 ## Keys (when the office pane is focused)
 
@@ -85,7 +158,7 @@ from `!` to a red `!!`, in sync with the toast). See
 
 Two actions are exposed globally and work even when the office pane is not open:
 
-- `agent-office.open` — open the office pane, or focus it if already open.
+- `agent-office.open` — focus the running office pane, or open one.
 - `agent-office.jump-blocked` — focus the longest-blocked agent's pane.
 
 Bind them to a herdr key so you can jump to a stuck agent from anywhere:

@@ -1,83 +1,67 @@
-"""CLI dispatch for the Agent Office plugin.
+"""Command-line dispatch for the Agent Office plugin.
 
 Subcommands (invoked by herdr via the manifest, CWD = plugin root):
   run                    run the resident office pane (default)
-  action-open            open (or re-open) the office pane
-  action-jump-blocked    focus the longest-blocked agent, stateless variant
+  action-open            focus the running office pane, or open one
+  action-jump-blocked    focus the longest-blocked agent
+  config-check           validate config.toml and print the effective settings
 
-Note: the single-shot actions here use the pane_id tiebreak described in
-design.md section 6 (no state.json); the state.json-accurate "oldest blocked"
-is Stage 2 item 2. Help/print text is ASCII only (Windows cp932 safety).
+This module only maps argv to a handler and prints; `run` lives in office.py
+and the two global actions in actions.py. Help/print text is ASCII only
+(Windows cp932 safety).
 """
 
 import os
 import sys
 
-from . import office, protocol
+from . import actions
+from . import config as config_mod
+from . import office
 
-PANE_TITLE = "Agent Office"          # manifest [[panes]].title == the pane label
+USAGE = """Agent Office - herdr plugin
 
-USAGE = """Agent Office - herdr plugin (Stage 2 core)
-
-usage: python3 -m office [run|action-open|action-jump-blocked]
+usage: python3 -m office [run|action-open|action-jump-blocked|config-check]
 
   run                  run the resident office pane (default)
-  action-open          open the office pane via the plugin API
-  action-jump-blocked  focus the longest-blocked agent (pane_id tiebreak)
+  action-open          focus the running office pane, or open one
+  action-jump-blocked  focus the longest-blocked agent
+  config-check         validate config.toml and show the effective settings
 """
 
-
-def _sock():
-    sock = os.environ.get("HERDR_SOCKET_PATH")
-    if not sock:
-        sys.stderr.write("HERDR_SOCKET_PATH not set; run me from herdr.\n")
-        raise SystemExit(2)
-    return sock
-
-
-def action_open():
-    sock = _sock()
-    plugin_id = os.environ.get("HERDR_PLUGIN_ID", "agent-office")
-    # Focus an existing office pane if one is open, otherwise open a new one.
-    # Without state.json (a later stage) the office pane is identified by its
-    # label, which defaults to the manifest pane title.
-    try:
-        for p in protocol.pane_list(sock):
-            if p.get("label") == PANE_TITLE and p.get("pane_id"):
-                protocol.request(sock, "plugin.pane.focus",
-                                 {"pane_id": p["pane_id"]})
-                return 0
-    except Exception:                                    # noqa: BLE001
-        pass                                             # fall through to open
-    try:
-        protocol.request(sock, "plugin.pane.open",
-                         {"plugin_id": plugin_id, "entrypoint": "office",
-                          "focus": True})
-    except Exception as exc:                              # noqa: BLE001
-        sys.stderr.write("open failed: %s\n" % exc)
-        return 1
-    return 0
+CONFIG_SECTIONS = (
+    ("office", ("filter", "renderer", "fps", "theme", "name_template")),
+    ("escalation", ("blocked_threshold_s", "renotify_interval_s", "sound",
+                    "notify_done")),
+    ("include", ("workspaces", "exclude_agents")),
+)
 
 
-def action_jump_blocked():
-    sock = _sock()
-    try:
-        panes = protocol.pane_list(sock)
-    except Exception as exc:                              # noqa: BLE001
-        sys.stderr.write("pane.list failed: %s\n" % exc)
-        return 1
-    blocked = sorted((p for p in panes if p.get("agent_status") == "blocked"),
-                     key=lambda p: p.get("pane_id", ""))
-    if not blocked:
-        sys.stderr.write("no blocked agents.\n")
-        return 0
-    target = blocked[0]["pane_id"]
-    try:
-        protocol.pane_focus(sock, target)
-    except Exception as exc:                              # noqa: BLE001
-        sys.stderr.write("pane.focus failed: %s\n" % exc)
-        return 1
-    return 0
+def config_check():
+    """Print the effective configuration; non-zero if anything was rejected."""
+    cfg = config_mod.load()
+    path = config_mod.config_path()
+    sys.stdout.write("config file: %s\n"
+                     % (path or "(HERDR_PLUGIN_CONFIG_DIR unset)"))
+    if not path or not os.path.exists(path):
+        sys.stdout.write("  (not present - using defaults, zero-config)\n")
+    for section, keys in CONFIG_SECTIONS:
+        sys.stdout.write("[%s]\n" % section)
+        for key in keys:
+            # ascii() rather than %r: a workspace glob or agent name may hold
+            # non-ASCII the console cannot encode (Windows cp932).
+            sys.stdout.write("  %-20s %s\n" % (key, ascii(getattr(cfg, key))))
+    for warning in cfg.warnings:
+        sys.stdout.write("warning: %s\n" % warning)
+    return 1 if cfg.warnings else 0
+
+
+COMMANDS = {
+    "run": office.run,
+    "office": office.run,
+    "action-open": actions.action_open,
+    "action-jump-blocked": actions.action_jump_blocked,
+    "config-check": config_check,
+}
 
 
 def main(argv=None):
@@ -86,11 +70,8 @@ def main(argv=None):
     if cmd in ("-h", "--help", "help"):
         sys.stdout.write(USAGE)
         return 0
-    if cmd in ("run", "office"):
-        return office.run()
-    if cmd == "action-open":
-        return action_open()
-    if cmd == "action-jump-blocked":
-        return action_jump_blocked()
-    sys.stderr.write("unknown subcommand: %s\n\n%s" % (cmd, USAGE))
-    return 2
+    handler = COMMANDS.get(cmd)
+    if handler is None:
+        sys.stderr.write("unknown subcommand: %s\n\n%s" % (cmd, USAGE))
+        return 2
+    return handler()

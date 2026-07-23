@@ -6,6 +6,7 @@ desks comes out. herdr's AgentStatus is the only source of truth; we never
 guess status ourselves.
 """
 
+import fnmatch
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -14,6 +15,15 @@ STATUSES = ("idle", "working", "blocked", "done", "unknown")
 
 @dataclass
 class Desk:
+    """One agent's desk.
+
+    **Ownership: OfficeState is the only writer.** Desks are handed out live
+    (not copied) to the Renderer, the Escalator and the state file writer,
+    which all treat them as read-only snapshots - a reader that mutated one
+    would be writing to the model from outside the single-writer loop, and the
+    change would not survive the next authoritative pane.list reconcile.
+    """
+
     pane_id: str
     workspace_id: str
     tab_id: str = ""
@@ -45,6 +55,7 @@ class Desk:
 class OfficeState:
     def __init__(self, self_pane_id: Optional[str] = None,
                  filter_mode: str = "agents",
+                 workspace_globs=(), exclude_agents=(),
                  now: Callable[[], float] = None):
         import time
         self.desks: Dict[str, Desk] = {}
@@ -53,16 +64,40 @@ class OfficeState:
         self.selected_pane_id: Optional[str] = None
         self.self_pane_id = self_pane_id
         self.filter_mode = filter_mode           # "agents" | "all"
+        # design.md section 8 [include]: optional narrowing of the fleet.
+        self.workspace_globs = tuple(workspace_globs)
+        self.exclude_agents = frozenset(exclude_agents)
         self._now = now or time.monotonic
 
     # -- membership -----------------------------------------------------
 
-    def _visible(self, pane_id: str, agent: Optional[str]) -> bool:
+    def _visible(self, pane_id: str, agent: Optional[str],
+                 workspace_id: str = "") -> bool:
         if pane_id == self.self_pane_id:
+            return False
+        if agent is not None and agent in self.exclude_agents:
+            return False
+        if self.workspace_globs and not self._workspace_included(workspace_id):
             return False
         if self.filter_mode == "all":
             return True
         return agent is not None
+
+    def _workspace_included(self, workspace_id: str) -> bool:
+        """Match [include].workspaces globs against the workspace label."""
+        return any(fnmatch.fnmatchcase(self.room_label(workspace_id), glob)
+                   for glob in self.workspace_globs)
+
+    def room_label(self, workspace_id: str) -> str:
+        """Display label for a workspace, falling back to its raw id.
+
+        The single definition of that fallback: islands, the compact view, the
+        state file and the [include] globs must all name a room the same way.
+        Labels arrive from workspace.list at startup and workspace.renamed
+        afterwards, so before one is known the id stands in - which also means
+        a glob is never silently treated as "matches everything".
+        """
+        return self.rooms.get(workspace_id, workspace_id)
 
     def ingest_pane(self, info: dict) -> None:
         """Upsert from a full PaneInfo (pane.list / pane.created / .updated).
@@ -74,13 +109,16 @@ class OfficeState:
         if not pane_id:
             return
         agent = info.get("agent")
-        if not self._visible(pane_id, agent):
+        existing = self.desks.get(pane_id)
+        workspace_id = info.get("workspace_id") or (
+            existing.workspace_id if existing else "")
+        if not self._visible(pane_id, agent, workspace_id):
             # A pane that stopped qualifying (e.g. agent released under
             # filter="agents") should be removed if we were showing it.
             self.desks.pop(pane_id, None)
             self._fix_selection()
             return
-        desk = self.desks.get(pane_id)
+        desk = existing
         if desk is None:
             desk = Desk(pane_id=pane_id, workspace_id=info.get("workspace_id", ""))
             self.desks[pane_id] = desk
@@ -112,10 +150,14 @@ class OfficeState:
         desk = self.desks.get(pane_id)
         if desk is None:
             # Unknown pane: create a minimal desk if it would be visible.
-            if not self._visible(pane_id, agent):
+            if not self._visible(pane_id, agent, workspace_id or ""):
                 return
             desk = Desk(pane_id=pane_id, workspace_id=workspace_id or "")
             self.desks[pane_id] = desk
+        elif agent is not None and agent in self.exclude_agents:
+            # An agent that only now identifies itself as excluded.
+            self.remove_pane(pane_id)
+            return
         if agent is not None:
             desk.agent = agent
         if display_agent is not None:
@@ -162,6 +204,31 @@ class OfficeState:
 
     def set_room_label(self, workspace_id: str, label: str) -> None:
         self.rooms[workspace_id] = label
+        if not self.workspace_globs:
+            return
+        # A rename can move a workspace out of [include].workspaces; drop its
+        # desks now. The opposite direction (a rename that newly matches) is
+        # picked up by the Reconciler's next authoritative pane.list.
+        if not self._workspace_included(workspace_id):
+            for pane_id in [d.pane_id for d in self.desks.values()
+                            if d.workspace_id == workspace_id]:
+                self.desks.pop(pane_id, None)
+            self._fix_selection()
+
+    def seed_blocked_since(self, blocked_since_by_pane) -> None:
+        """Adopt blocked_since values recovered from state.json (section 7).
+
+        Only applies to desks that are blocked *now* and only when the recorded
+        value is older than the one we just made up from the startup snapshot,
+        so an agent that was already stuck before the office pane opened does
+        not get a fresh 90s of grace.
+        """
+        for pane_id, blocked_since in (blocked_since_by_pane or {}).items():
+            desk = self.desks.get(pane_id)
+            if desk is None or desk.status != "blocked":
+                continue
+            if desk.blocked_since is None or blocked_since < desk.blocked_since:
+                desk.blocked_since = blocked_since
 
     def remove_room(self, workspace_id: str) -> None:
         self.rooms.pop(workspace_id, None)
@@ -188,7 +255,7 @@ class OfficeState:
         for desk in self.ordered_desks():
             if current is None or current[0] != desk.workspace_id:
                 current = (desk.workspace_id,
-                           self.rooms.get(desk.workspace_id, desk.workspace_id),
+                           self.room_label(desk.workspace_id),
                            [])
                 out.append(current)
             current[2].append(desk)

@@ -73,6 +73,50 @@ class RenderSmokeTest(unittest.TestCase):
         frame = r.render(OfficeState(), 120, 40)
         self.assertIn("0 desks", frame)
 
+    def test_status_line_is_appended(self):
+        r = Renderer(tier=1, truecolor=True)
+        frame = r.render(_state(), 120, 40, status="config broke")
+        self.assertIn("config broke", frame)
+        self.assertEqual(frame.count("\r\n"), 39)     # still exactly `rows`
+
+    def test_name_template_shortens_room_labels(self):
+        s = OfficeState()
+        s.ingest_pane({"pane_id": "p1", "workspace_id": "w1",
+                       "agent": "claude", "agent_status": "idle"})
+        s.set_room_label("w1", "claude-org/run/g7/a2")
+        plain = Renderer(tier=0, truecolor=False).render(s, 120, 40)
+        short = Renderer(tier=0, truecolor=False,
+                         name_template="{name:last-segment}").render(s, 120, 40)
+        self.assertIn("[ claude-org/run/g7/a2 ]", plain)
+        self.assertIn("[ a2 ]", short)
+
+
+class EscalatedTest(unittest.TestCase):
+    """The ESCALATED overlay (character-states.md section 1)."""
+
+    def test_tier0_blocked_bubble_becomes_double_bang(self):
+        r = Renderer(tier=0, truecolor=False)
+        plain = r.render(_state(), 120, 40, frame=0)
+        loud = r.render(_state(), 120, 40, frame=0, escalated={"w1:p2"})
+        self.assertIn("!!", loud)
+        self.assertNotIn("!!", plain)
+
+    def test_escalating_an_unblocked_desk_changes_nothing(self):
+        r = Renderer(tier=0, truecolor=False)
+        self.assertEqual(r.render(_state(), 120, 40, frame=0),
+                         r.render(_state(), 120, 40, frame=0,
+                                  escalated={"w1:p1"}))   # p1 is working
+
+    def test_tier1_escalated_frame_still_renders(self):
+        r = Renderer(tier=1, truecolor=True)
+        frame = r.render(_state(), 120, 40, frame=0, escalated={"w1:p2"})
+        self.assertIn("AGENT OFFICE", frame)
+
+    def test_compact_marks_escalated(self):
+        r = Renderer(tier=1, truecolor=True)
+        frame = r.render(_state(), 40, 12, escalated={"w1:p2"})
+        self.assertIn("blocked!!", frame)
+
 
 if __name__ == "__main__":
     unittest.main()
