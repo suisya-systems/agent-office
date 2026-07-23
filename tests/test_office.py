@@ -149,6 +149,31 @@ class ActionFeedbackTest(unittest.TestCase):
         office._handle(("action", ("focus", None, None)))
         self.assertIn("refreshing", office._status())
 
+    def test_a_status_event_outranks_the_refresh_it_overtook(self):
+        # The refresh's panes are as herdr saw them when `a` was pressed. A
+        # pane.agent_status_changed handled while it was in flight is newer,
+        # and rolling it back here would blank the escalation timer.
+        office = self.office()
+        office._handle(("snapshot", [{"pane_id": "p1", "agent": "claude",
+                                      "agent_status": "working"}]))
+        office._handle(("key", "a"))
+        office._handle(("status", {"pane_id": "p1", "agent_status": "blocked"}))
+        blocked_since = office.state.desks["p1"].blocked_since
+        office._handle(("action", ("pane_list", [{"pane_id": "p1",
+                                                  "agent": "claude",
+                                                  "agent_status": "working"}],
+                                   None)))
+        self.assertEqual(office.state.desks["p1"].status, "blocked")
+        self.assertEqual(office.state.desks["p1"].blocked_since, blocked_since)
+
+    def test_the_refresh_still_brings_in_panes_it_had_not_seen(self):
+        office = self.office()
+        office._handle(("key", "a"))
+        office._handle(("action", ("pane_list", [{"pane_id": "p9",
+                                                  "agent_status": "blocked"}],
+                                   None)))
+        self.assertEqual(office.state.desks["p9"].status, "blocked")
+
     def test_a_user_refresh_does_not_spend_the_startup_seed(self):
         # design.md section 7: the recovered blocked_since belongs to the
         # authoritative startup snapshot. An `a` refresh can arrive first (and

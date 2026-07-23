@@ -286,6 +286,36 @@ class ReconcileTest(unittest.TestCase):
         s.reconcile_snapshot([pane("p2"), pane("p3")])
         self.assertEqual(sorted(s.desks), ["p2", "p3"])
 
+    def test_keep_status_since_protects_a_newer_status(self):
+        clock = FakeClock()
+        s = OfficeState(now=clock)
+        s.ingest_pane(pane("p1", status="working"))
+        asked_at = s.now()                    # a snapshot goes out...
+        clock.advance(1)
+        s.set_status("p1", "blocked")         # ...and an event overtakes it
+        blocked_since = s.desks["p1"].blocked_since
+        s.reconcile_snapshot([pane("p1", status="working")],
+                             keep_status_since=asked_at)
+        self.assertEqual(s.desks["p1"].status, "blocked")
+        self.assertEqual(s.desks["p1"].blocked_since, blocked_since)
+
+    def test_without_keep_status_since_the_snapshot_still_wins(self):
+        # The periodic reconcile is authoritative on purpose: a missed
+        # pane.agent_status_changed is what it exists to repair.
+        clock = FakeClock()
+        s = OfficeState(now=clock)
+        s.ingest_pane(pane("p1", status="blocked"))
+        clock.advance(1)
+        s.reconcile_snapshot([pane("p1", status="working")])
+        self.assertEqual(s.desks["p1"].status, "working")
+
+    def test_keep_status_since_still_admits_a_new_pane(self):
+        clock = FakeClock()
+        s = OfficeState(now=clock)
+        s.reconcile_snapshot([pane("p1", status="blocked")],
+                             keep_status_since=s.now())
+        self.assertEqual(s.desks["p1"].status, "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()

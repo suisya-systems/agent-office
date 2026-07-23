@@ -97,6 +97,9 @@ class Office:
         # put there, so its result can take it back down without wiping a
         # newer, unrelated notice that arrived in between.
         self.pending_status = ""
+        # When the in-flight filter refresh was asked for; status events the
+        # loop handles after it outrank the panes it will come back with.
+        self.refresh_asked_at = None
 
     # -- main loop ------------------------------------------------------
 
@@ -214,7 +217,7 @@ class Office:
         elif kind == "log":
             self.status_line = payload
 
-    def _apply_snapshot(self, panes, seed=False):
+    def _apply_snapshot(self, panes, seed=False, keep_status_since=None):
         """Apply a pane.list; `seed` marks the authoritative Subscriber path.
 
         Only that path may spend the recovered blocked_since: a refresh the
@@ -223,7 +226,7 @@ class Office:
         the seed on a partial view, handing an already-stuck agent a fresh
         countdown.
         """
-        self.state.reconcile_snapshot(panes)
+        self.state.reconcile_snapshot(panes, keep_status_since=keep_status_since)
         if seed and self._seed_blocked:
             # design.md section 7: adopt the previous run's blocked_since so an
             # agent stuck before the office opened is not given a fresh
@@ -298,6 +301,7 @@ class Office:
         new = "all" if self.state.filter_mode == "agents" else "agents"
         self.state.set_filter(new)
         self._set_pending("filter %s; refreshing" % new)
+        self.refresh_asked_at = self.state.now()
         self.commander.list_panes()
 
     def _handle_action_result(self, name, result, error):
@@ -310,11 +314,15 @@ class Office:
         if error:
             if name == PANE_LIST:
                 self.pending_status = ""      # superseded by the failure below
+                self.refresh_asked_at = None
             self.status_line = "%s failed: %s" % (
                 "jump" if name == FOCUS else "filter refresh", error)
             return
         if name == PANE_LIST:
-            self._apply_snapshot(result)
+            # These panes are as herdr saw them when the refresh went out;
+            # any status event handled since then is the newer truth.
+            self._apply_snapshot(result, keep_status_since=self.refresh_asked_at)
+            self.refresh_asked_at = None
             self._clear_pending()
 
     def _set_pending(self, text):
