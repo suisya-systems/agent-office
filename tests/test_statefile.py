@@ -99,6 +99,18 @@ class WriterTest(unittest.TestCase):
         self.assertFalse(writer.maybe_write(self.state))
         self.assertFalse(writer.write_stopped())
 
+    def test_blocked_desk_does_not_rewrite_on_every_tick(self):
+        # regression: blocked_since was converted to an epoch inside the
+        # change-detection snapshot, so two live clocks re-read per call made
+        # every row differ by float jitter and rewrote the file every tick.
+        writer = statefile.StateWriter(self.path)         # real clocks
+        self.state.ingest_pane(pane("p1", status="blocked"))
+        self.assertTrue(writer.maybe_write(self.state))
+        for _ in range(5):
+            self.assertFalse(writer.maybe_write(self.state))
+        # and the value that lands on disk is still a wall-clock epoch
+        self.assertGreater(self.read()["desks"][0]["blocked_since"], 0)
+
     def test_write_is_atomic_leaving_no_temp_files(self):
         self.state.ingest_pane(pane("p1"))
         self.writer.maybe_write(self.state)

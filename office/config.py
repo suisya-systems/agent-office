@@ -12,6 +12,7 @@ which the office pane shows on its status line, so a typo can never stop the
 fleet view from coming up. All warning text is ASCII (Windows cp932 consoles).
 """
 
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Tuple
@@ -193,12 +194,24 @@ def _choice(table, section, key, default, allowed, warnings):
     return default
 
 
+def _is_number(value) -> bool:
+    """A usable number: not a bool, and not TOML's nan / inf / -inf.
+
+    `nan` and `inf` are valid TOML floats, so they reach validation. Left
+    alone, `int(nan)` raises (taking the whole office down on a typo) and a
+    `nan` threshold compares False against everything, silently disabling
+    escalation instead of falling back to the default.
+    """
+    return (not isinstance(value, bool) and isinstance(value, (int, float))
+            and math.isfinite(value))
+
+
 def _int_range(table, section, key, default, low, high, warnings):
     if _missing(table, key):
         return default
     value = table[key]
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        warnings.append("[%s].%s must be a number (using %r)"
+    if not _is_number(value):
+        warnings.append("[%s].%s must be a finite number (using %r)"
                         % (section, key, default))
         return default
     clamped = max(low, min(high, int(value)))
@@ -212,8 +225,8 @@ def _seconds(table, section, key, default, warnings, minimum=0.0):
     if _missing(table, key):
         return default
     value = table[key]
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        warnings.append("[%s].%s must be a number of seconds (using %g)"
+    if not _is_number(value):
+        warnings.append("[%s].%s must be a finite number of seconds (using %g)"
                         % (section, key, default))
         return default
     if value < minimum:

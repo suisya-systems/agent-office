@@ -142,7 +142,7 @@ class StateWriter:
             "running": True,
             "office_pane_id": self.office_pane_id,
             "pid": os.getpid(),
-            "desks": desks,
+            "desks": self._to_epoch_rows(desks),
         }):
             self._last_write = now
             self._last_desks = desks
@@ -159,14 +159,20 @@ class StateWriter:
             "running": False,
             "office_pane_id": None,
             "pid": os.getpid(),
-            "desks": self._last_desks or [],
+            "desks": self._to_epoch_rows(self._last_desks or []),
         })
 
     # -- internals ---------------------------------------------------
 
     def _desk_rows(self, state, escalated):
+        """Snapshot rows used for change detection.
+
+        blocked_since stays on the *monotonic* clock here. Converting it to an
+        epoch at this point would re-read two independent clocks on every call,
+        and their sub-microsecond drift would make every row compare unequal -
+        rewriting state.json on every animation tick instead of every 10s.
+        """
         escalated = set(escalated)
-        wall_now, mono_now = self._wall(), self._now()
         rows = []
         for desk in state.ordered_desks():
             rows.append({
@@ -177,11 +183,18 @@ class StateWriter:
                 "display_name": desk.display_name,
                 "agent": desk.agent,
                 "status": desk.status,
-                "blocked_since": _to_epoch(desk.blocked_since, wall_now,
-                                           mono_now),
+                "blocked_since": desk.blocked_since,      # monotonic
                 "escalated": desk.pane_id in escalated,
             })
         return rows
+
+    def _to_epoch_rows(self, rows):
+        """Same rows with blocked_since moved onto the wall clock, for disk."""
+        wall_now, mono_now = self._wall(), self._now()
+        return [dict(row,
+                     blocked_since=_to_epoch(row["blocked_since"], wall_now,
+                                             mono_now))
+                for row in rows]
 
     def _write(self, payload) -> bool:
         tmp = "%s.tmp.%d" % (self.path, os.getpid())

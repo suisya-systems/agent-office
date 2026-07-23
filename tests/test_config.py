@@ -155,6 +155,18 @@ class FromMappingTest(unittest.TestCase):
         self.assertEqual(cfg.exclude_agents, ("ok",))
         self.assertEqual(len(cfg.warnings), 9)
 
+    def test_non_finite_numbers_fall_back(self):
+        # nan/inf are valid TOML floats: int(nan) would raise, and a nan
+        # threshold compares False against everything (escalation goes silent)
+        for value in (float("nan"), float("inf"), float("-inf")):
+            cfg = from_mapping({"office": {"fps": value},
+                                "escalation": {"blocked_threshold_s": value,
+                                               "renotify_interval_s": value}})
+            self.assertEqual(cfg.fps, 2)
+            self.assertEqual(cfg.blocked_threshold_s, 90.0)
+            self.assertEqual(cfg.renotify_interval_s, 300.0)
+            self.assertEqual(len(cfg.warnings), 3)
+
     def test_fps_is_clamped(self):
         self.assertEqual(from_mapping({"office": {"fps": 99}}).fps, 10)
         self.assertEqual(from_mapping({"office": {"fps": 0}}).fps, 1)
@@ -213,6 +225,12 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(cfg.path, path)
         self.assertEqual(cfg.filter, "all")
         self.assertEqual(cfg.blocked_threshold_s, 30.0)
+
+    def test_nan_in_a_real_file_does_not_crash_startup(self):
+        self.write("[office]\nfps = nan\n")
+        cfg = load(self.env)                              # must not raise
+        self.assertEqual(cfg.fps, 2)
+        self.assertTrue(cfg.warnings)
 
     def test_broken_file_degrades_to_defaults(self):
         self.write("this is not toml at all")
