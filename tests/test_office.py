@@ -241,6 +241,40 @@ class GraphicsWiringTest(unittest.TestCase):
         self.assertEqual(proto.sets, 4)
         self.assertIn("busy", office._status())
 
+    def test_switching_to_a_sprite_free_view_clears_despite_the_backoff(self):
+        """Regression: the backoff held back the clear the help view needs.
+
+        A failed send starts the backoff. Pressing `?` right after replaces
+        the desks with help text, and the stale image - still up, if the
+        failure's best-effort clear was refused too - sat on top of it until
+        the window elapsed. The backoff gates retries, not new intent.
+        """
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office._handle(("graphics", (False, "busy")))
+        clock[0] += 0.05                           # well inside the backoff
+        office.renderer.sprite_boxes = []          # help / compact view
+        office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["set", "clear"])
+
+    def test_a_repeatedly_failing_clear_still_does_not_spin(self):
+        # The flip side of the test above: acting on new intent at once must
+        # not let a persistently refused clear run once per redraw.
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = []
+        for _ in range(50):
+            office._sync_overlay()
+            office._handle(("graphics", (False, "busy")))
+            clock[0] += 0.04                       # MIN_REDRAW_S: ~25 fps
+        self.assertLessEqual(len(fake.calls), 2)
+
     def test_a_standing_refusal_does_not_send_on_every_redraw(self):
         # herdr can turn experimental.kitty_graphics back off under a running
         # office (server reload-config), so the failure path must be bounded.
