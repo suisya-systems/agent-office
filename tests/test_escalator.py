@@ -200,6 +200,19 @@ class EscalatorTest(unittest.TestCase):
         self.clk.advance(THRESHOLD + AGGREGATE_WINDOW_S)
         self.assertEqual(len(self.tick([d])), 1)
 
+    def test_a_blocked_since_from_before_boot_still_counts(self):
+        # Inherited across a reboot, blocked_since can be negative: the desk
+        # blocked before this machine's monotonic clock started. Only
+        # `now - blocked_since` is ever taken from it, so the timer must run
+        # exactly as if the clock had been up all along (CI, PR #13).
+        clk = FakeClock(t=30.0)                       # 30 seconds of uptime
+        esc = Escalator(threshold_s=THRESHOLD, renotify_s=RENOTIFY, now=clk)
+        d = desk("p1", blocked_since=-30.0)           # blocked 60s ago
+        self.assertEqual(esc.tick([d], {}), [])       # 60s < 90s: not yet
+        clk.advance(THRESHOLD - 60 + AGGREGATE_WINDOW_S)
+        self.assertEqual(len(esc.tick([d], {})), 1)
+        self.assertEqual(esc.escalated_ids(), {"p1"})
+
     # -- mute --------------------------------------------------------
 
     def test_mute_suppresses_and_restarts_the_window(self):

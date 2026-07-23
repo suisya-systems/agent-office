@@ -399,6 +399,34 @@ class RoundTripTest(unittest.TestCase):
         # 30s of the countdown already elapsed before this process started
         self.assertEqual(second.desks["p1"].blocked_since, 8970.0)
 
+    def test_a_countdown_survives_a_reboot_onto_a_fresh_monotonic(self):
+        """Short uptime: the recovered value lands *before* the clock's zero.
+
+        On a machine that just booted, time.monotonic() is a two-digit number,
+        so a blocked_since recorded before the boot converts to a negative
+        monotonic value. That is arithmetically right - nothing ever reads it
+        as an absolute time, only as `now - blocked_since` - and it must still
+        be inherited, or the desk restarts its countdown on every reboot.
+        """
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = os.path.join(directory.name, statefile.STATE_BASENAME)
+        mono, wall = Clock(50_000.0), Clock(1_700_000_000.0)
+
+        first = OfficeState(now=mono)
+        first.ingest_pane(pane("p1", status="blocked"))
+        statefile.StateWriter(path, now=mono, wall=wall).maybe_write(first)
+
+        wall.advance(120)                      # blocked 2 minutes ago, then...
+        boot = Clock(30.0)                     # ...a reboot: 30s of uptime
+        second = OfficeState(now=boot)
+        second.ingest_pane(pane("p1", status="blocked"))
+        second.seed_blocked_since(statefile.blocked_since_map(
+            statefile.read(path), wall_now=wall.t, mono_now=boot.t))
+
+        self.assertEqual(second.desks["p1"].blocked_since, -90.0)
+        self.assertEqual(boot.t - second.desks["p1"].blocked_since, 120.0)
+
     def test_a_long_outage_starts_the_countdown_fresh(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

@@ -198,12 +198,17 @@ class ActionFeedbackTest(unittest.TestCase):
         # on a partial fleet), and must not consume it - the desk would then
         # start a fresh 90s countdown instead of inheriting its real one.
         office = self.office()
-        office._seed_blocked = {"p1": 1000.0}
+        # Taken from the model's own clock, not written out as a constant: a
+        # bare 1000.0 is in the *future* on a freshly booted machine, where
+        # time.monotonic() is still a two-digit number, and would be ignored
+        # for a reason that has nothing to do with this test (CI, PR #13).
+        seeded = office.state.now() - 500.0
+        office._seed_blocked = {"p1": seeded}
         panes = [{"pane_id": "p1", "agent": "claude", "agent_status": "blocked"}]
         office._handle(("action", ("pane_list", panes, None)))
-        self.assertNotEqual(office.state.desks["p1"].blocked_since, 1000.0)
+        self.assertNotEqual(office.state.desks["p1"].blocked_since, seeded)
         office._handle(("snapshot", panes))
-        self.assertEqual(office.state.desks["p1"].blocked_since, 1000.0)
+        self.assertEqual(office.state.desks["p1"].blocked_since, seeded)
 
     def test_a_newer_notice_outlives_the_pending_one(self):
         # The refresh result must clear its own message, not whatever the
