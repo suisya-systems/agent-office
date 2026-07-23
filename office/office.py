@@ -323,6 +323,16 @@ class Office:
         if name == PANE_LIST:
             # These panes are as herdr saw them when *this* refresh went out;
             # any status event handled since then is the newer truth.
+            #
+            # Membership is taken as authoritative all the same, which leaves
+            # one accepted window: a pane that closed while the refresh was in
+            # flight is re-added here, over the pane.closed the loop already
+            # applied, and stays until the next periodic reconcile evicts it.
+            # That is the same staleness the 60s reconcile has always had (its
+            # pane.list is fetched off-loop too) and the same ghost it exists
+            # to sweep (issue #1); the window here is one socket round-trip -
+            # 2ms against herdr 0.7.4 - and self-healing, so it is documented
+            # rather than defended against with tombstones in OfficeState.
             self._apply_snapshot(result, keep_status_since=asked_at)
             if not self.refreshes_in_flight:
                 self._clear_pending()
