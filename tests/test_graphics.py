@@ -341,17 +341,24 @@ class SenderTest(unittest.TestCase):
         sender.clear()
         self.assertEqual(sender._pending, ("clear", None))
 
-    def test_success_then_failure_is_reported_once_each(self):
+    def test_every_outcome_is_reported_including_repeats(self):
+        """Regression: swallowing a repeated failure killed the retry.
+
+        The loop decides from these reports whether the overlay is on screen.
+        A second identical failure that never arrived left it believing the
+        re-send had worked, so retrying stopped after the second attempt and
+        the overlay stayed missing. Rate limiting belongs to the loop's
+        backoff alone.
+        """
         fake = FakeProtocol()
         sender = self.sender(fake)
         sender._run(("clear", None))
         sender._run(("clear", None))
-        self.assertEqual(self.drain(), [("graphics", (True, ""))])
-        fake.fail_with = self.real.ProtocolError("feature_disabled", "off")
+        self.assertEqual(self.drain(), [("graphics", (True, ""))] * 2)
+        fake.fail_with = self.real.ProtocolError("busy", "server busy")
         sender._run(("clear", None))
         sender._run(("clear", None))
-        self.assertEqual(self.drain(),
-                         [("graphics", (False, "feature_disabled"))])
+        self.assertEqual(self.drain(), [("graphics", (False, "busy"))] * 2)
 
     def test_a_transport_error_is_caught_and_reported(self):
         sender = self.sender(FakeProtocol(fail_with=OSError("broken pipe")))

@@ -154,9 +154,15 @@ class GraphicsSender:
     feeder threads use.
 
     Reports back through the shared office queue:
-      ("graphics", (ok, message))   only when the outcome *changes*, so a
-                                    persistent failure says so once instead of
-                                    every tick.
+      ("graphics", (ok, message))   every outcome, without exception.
+
+    Reporting *every* outcome matters more than it looks. The loop uses these
+    to decide whether the overlay is on screen, and it re-sends after a
+    failure; swallowing a repeat of the same failure would leave it believing
+    a send it never heard about had worked, and the retry would stop dead
+    after the second attempt. Rate limiting therefore lives in exactly one
+    place - the loop's own retry backoff - rather than being split across both
+    halves where the two policies can quietly cancel out.
     """
 
     def __init__(self, sock_path, out_queue, pane_id):
@@ -167,7 +173,6 @@ class GraphicsSender:
         self._pending = None            # ("set", Overlay) | ("clear", None)
         self._stopping = False
         self._thread = None
-        self._last_report = None        # last (ok, message) handed to the loop
 
     def start(self):
         self._thread = threading.Thread(target=self._loop, daemon=True,
@@ -232,11 +237,7 @@ class GraphicsSender:
         self._report(True, "")
 
     def _report(self, ok, message):
-        current = (ok, message)
-        if current == self._last_report:
-            return                      # unchanged: do not retell every tick
-        self._last_report = current
-        self.out.put(("graphics", current))
+        self.out.put(("graphics", (ok, message)))
 
 
 def clear_now(sock_path, pane_id, timeout=2.0):

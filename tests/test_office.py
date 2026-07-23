@@ -7,6 +7,7 @@ out and the Commander's socket faked, to pin down issue #12: a stuck herdr must
 not stop the frames.
 """
 
+import queue
 import signal
 import threading
 import time
@@ -193,6 +194,52 @@ class GraphicsWiringTest(unittest.TestCase):
         clock[0] += office_mod.GRAPHICS_RETRY_S + 0.1
         office._sync_overlay()
         self.assertEqual([c[0] for c in fake.calls], ["set", "set"])
+
+    def test_repeated_identical_failures_keep_being_retried(self):
+        """Regression: the two rate limiters cancelled out.
+
+        Driven through the *real* GraphicsSender rather than a stub, because
+        the bug lived in the interaction: the sender used to drop a repeat of
+        the same failure, so the loop never heard about the second one, went
+        on believing the overlay was up, and stopped retrying for good.
+        """
+        from office import graphics as graphics_mod
+
+        class AlwaysBusy:
+            ProtocolError = graphics_mod.protocol.ProtocolError
+
+            def __init__(self):
+                self.sets = 0
+
+            def pane_graphics_set(self, *a, **kw):
+                self.sets += 1
+                raise self.ProtocolError("busy", "server busy")
+
+            def pane_graphics_clear(self, *a, **kw):
+                pass
+
+        real = graphics_mod.protocol
+        self.addCleanup(setattr, graphics_mod, "protocol", real)
+        graphics_mod.protocol = proto = AlwaysBusy()
+
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        for _ in range(4):
+            office._sync_overlay()
+            pending = office.graphics._pending
+            if pending:
+                office.graphics._pending = None
+                office.graphics._run(pending)
+            while True:
+                try:
+                    office._handle(office.q.get_nowait())
+                except queue.Empty:
+                    break
+            clock[0] += office_mod.GRAPHICS_RETRY_S + 1
+        self.assertEqual(proto.sets, 4)
+        self.assertIn("busy", office._status())
 
     def test_a_standing_refusal_does_not_send_on_every_redraw(self):
         # herdr can turn experimental.kitty_graphics back off under a running
