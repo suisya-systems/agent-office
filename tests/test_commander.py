@@ -71,25 +71,27 @@ class CommanderTest(unittest.TestCase):
     def test_focus_reports_success_with_no_error(self):
         fake = FakeProtocol()
         self.start(fake).focus("pane-7")
-        name, result, error = self.result()
-        self.assertEqual((name, result, error), ("focus", None, None))
+        name, result, error, token = self.result()
+        self.assertEqual((name, result, error, token),
+                         ("focus", None, None, None))
         self.assertEqual(fake.focused, ["pane-7"])
 
     def test_focus_failure_comes_back_as_a_message(self):
         self.start(FakeProtocol(error=RuntimeError("herdr is down"))).focus("p1")
-        name, _result, error = self.result()
+        name, _result, error, _token = self.result()
         self.assertEqual(name, "focus")
         self.assertIn("herdr is down", error)
 
     def test_pane_list_carries_the_panes_back(self):
         panes = [{"pane_id": "p1"}, {"pane_id": "p2"}]
-        self.start(FakeProtocol(panes=panes)).list_panes()
-        name, result, error = self.result()
-        self.assertEqual((name, result, error), ("pane_list", panes, None))
+        self.start(FakeProtocol(panes=panes)).list_panes(token=7)
+        name, result, error, token = self.result()
+        self.assertEqual((name, result, error, token),
+                         ("pane_list", panes, None, 7))
 
     def test_pane_list_failure_is_reported_not_raised(self):
         self.start(FakeProtocol(error=OSError("timed out"))).list_panes()
-        name, result, error = self.result()
+        name, result, error, _token = self.result()
         self.assertEqual((name, result), ("pane_list", None))
         self.assertIn("timed out", error)
 
@@ -102,7 +104,7 @@ class CommanderTest(unittest.TestCase):
         self.result()
         fake.error = None
         commander.focus("p2")
-        _name, _result, error = self.result()
+        _name, _result, error, _token = self.result()
         self.assertIsNone(error)
         self.assertEqual(fake.focused, ["p1", "p2"])
 

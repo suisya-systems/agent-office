@@ -97,9 +97,10 @@ class Office:
         # put there, so its result can take it back down without wiping a
         # newer, unrelated notice that arrived in between.
         self.pending_status = ""
-        # When the in-flight filter refresh was asked for; status events the
-        # loop handles after it outrank the panes it will come back with.
-        self.refresh_asked_at = None
+        # Refreshes still out on the Commander. Only the last one home takes
+        # the pending notice down; each carries its own "asked at" as a token,
+        # so overlapping presses never borrow each other's.
+        self.refreshes_in_flight = 0
 
     # -- main loop ------------------------------------------------------
 
@@ -301,29 +302,30 @@ class Office:
         new = "all" if self.state.filter_mode == "agents" else "agents"
         self.state.set_filter(new)
         self._set_pending("filter %s; refreshing" % new)
-        self.refresh_asked_at = self.state.now()
-        self.commander.list_panes()
+        self.refreshes_in_flight += 1
+        self.commander.list_panes(token=self.state.now())
 
-    def _handle_action_result(self, name, result, error):
+    def _handle_action_result(self, name, result, error, asked_at=None):
         """Outcome of a Commander action, one socket round-trip after the key.
 
         Only the refresh puts a pending notice up, so only the refresh's own
         result takes it down: a jump that happens to land in between says its
         piece without cancelling a refresh that is still in flight.
         """
+        if name == PANE_LIST:
+            self.refreshes_in_flight = max(0, self.refreshes_in_flight - 1)
         if error:
             if name == PANE_LIST:
                 self.pending_status = ""      # superseded by the failure below
-                self.refresh_asked_at = None
             self.status_line = "%s failed: %s" % (
                 "jump" if name == FOCUS else "filter refresh", error)
             return
         if name == PANE_LIST:
-            # These panes are as herdr saw them when the refresh went out;
+            # These panes are as herdr saw them when *this* refresh went out;
             # any status event handled since then is the newer truth.
-            self._apply_snapshot(result, keep_status_since=self.refresh_asked_at)
-            self.refresh_asked_at = None
-            self._clear_pending()
+            self._apply_snapshot(result, keep_status_since=asked_at)
+            if not self.refreshes_in_flight:
+                self._clear_pending()
 
     def _set_pending(self, text):
         self.pending_status = text

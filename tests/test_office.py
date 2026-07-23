@@ -19,6 +19,9 @@ from office.office import TOAST_HINT, Office
 from office.screen import Screen
 
 
+WORKING_P1 = {"pane_id": "p1", "agent": "claude", "agent_status": "working"}
+
+
 def make_office(config=None):
     return Office("/nonexistent.sock", "self-pane", tier=1, truecolor=True,
                   config=config or Config())
@@ -159,12 +162,27 @@ class ActionFeedbackTest(unittest.TestCase):
         office._handle(("key", "a"))
         office._handle(("status", {"pane_id": "p1", "agent_status": "blocked"}))
         blocked_since = office.state.desks["p1"].blocked_since
-        office._handle(("action", ("pane_list", [{"pane_id": "p1",
-                                                  "agent": "claude",
-                                                  "agent_status": "working"}],
-                                   None)))
+        office._handle(("action", ("pane_list", [WORKING_P1], None,
+                                   office.commander.tokens[0])))
         self.assertEqual(office.state.desks["p1"].status, "blocked")
         self.assertEqual(office.state.desks["p1"].blocked_since, blocked_since)
+
+    def test_overlapping_refreshes_keep_their_own_timestamps(self):
+        # Two `a` presses in flight at once: the first result home must not
+        # take the second one's token with it, or the second would be applied
+        # as if nothing could have overtaken it.
+        office = self.office()
+        office._handle(("snapshot", [{"pane_id": "p1", "agent": "claude",
+                                      "agent_status": "working"}]))
+        office._handle(("key", "a"))
+        office._handle(("key", "a"))
+        first, second = office.commander.tokens
+        office._handle(("status", {"pane_id": "p1", "agent_status": "blocked"}))
+        office._handle(("action", ("pane_list", [WORKING_P1], None, first)))
+        self.assertIn("refreshing", office._status())   # one still out
+        office._handle(("action", ("pane_list", [WORKING_P1], None, second)))
+        self.assertEqual(office.state.desks["p1"].status, "blocked")
+        self.assertEqual(office._status(), "")
 
     def test_the_refresh_still_brings_in_panes_it_had_not_seen(self):
         office = self.office()
@@ -202,7 +220,7 @@ class RecordingCommander:
 
     def __init__(self):
         self.focused = []
-        self.lists = 0
+        self.tokens = []                  # one per pane.list request
 
     def start(self):
         pass
@@ -210,11 +228,15 @@ class RecordingCommander:
     def stop(self):
         pass
 
-    def focus(self, pane_id):
+    def focus(self, pane_id, token=None):
         self.focused.append(pane_id)
 
-    def list_panes(self):
-        self.lists += 1
+    def list_panes(self, token=None):
+        self.tokens.append(token)
+
+    @property
+    def lists(self):
+        return len(self.tokens)
 
 
 class StuckProtocol:

@@ -7,9 +7,12 @@ This is the same split the Notifier already applies to escalation toasts: the
 loop decides *what* to ask for and returns immediately, this thread does the
 asking, and the outcome comes back through the shared office queue:
 
-  ("action", (name, result, error))    name is "focus" or "pane_list";
-                                       exactly one of result/error is set,
-                                       error being the message string.
+  ("action", (name, result, error, token))
+                                       name is "focus" or "pane_list"; at most
+                                       one of result/error is set, error being
+                                       the message string; token is whatever
+                                       the caller attached to the request, so
+                                       overlapping requests stay told apart.
 
 Deliberately a second thread rather than a queue shared with the Notifier: a
 toast can sit in a rate-limit or a retry for a while, and a keypress must not
@@ -46,13 +49,18 @@ class Commander:
 
     # -- requests (return immediately) -----------------------------------
 
-    def focus(self, pane_id):
-        """Focus a pane. Reports back as ("action", ("focus", None, error))."""
-        self._q.put((FOCUS, pane_id))
+    def focus(self, pane_id, token=None):
+        """Focus a pane, reported as ("focus", None, error, token)."""
+        self._q.put((FOCUS, pane_id, token))
 
-    def list_panes(self):
-        """Fetch pane.list, reported as ("action", ("pane_list", panes, None))."""
-        self._q.put((PANE_LIST, None))
+    def list_panes(self, token=None):
+        """Fetch pane.list, reported as ("pane_list", panes, error, token).
+
+        The token comes back untouched: the caller decides what a request has
+        to remember about itself, and two refreshes in flight at once cannot
+        be confused for one another.
+        """
+        self._q.put((PANE_LIST, None, token))
 
     # -- worker ----------------------------------------------------------
 
@@ -61,16 +69,16 @@ class Commander:
             item = self._q.get()
             if item is None:
                 return
-            name, arg = item
+            name, pane_id, token = item
             try:
                 if name == FOCUS:
-                    protocol.pane_focus(self.sock_path, arg)
+                    protocol.pane_focus(self.sock_path, pane_id)
                     result = None
                 else:
                     result = protocol.pane_list(self.sock_path)
             except Exception as exc:                       # noqa: BLE001
                 # The loop owns the wording and the status line; report the
                 # failure rather than deciding what the user should read.
-                self.out.put(("action", (name, None, "%s" % exc)))
+                self.out.put(("action", (name, None, "%s" % exc, token)))
                 continue
-            self.out.put(("action", (name, result, None)))
+            self.out.put(("action", (name, result, None, token)))
