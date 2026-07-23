@@ -13,6 +13,7 @@ import time
 
 from . import protocol
 from .input import InputReader
+from .reconciler import Reconciler
 from .renderer import Renderer, detect_caps
 from .state import OfficeState
 from .subscriber import Subscriber
@@ -28,6 +29,7 @@ class Office:
         self.state = OfficeState(self_pane_id=self_pane_id, filter_mode="agents")
         self.renderer = Renderer(tier=tier, truecolor=truecolor)
         self.subscriber = Subscriber(sock_path, self.q, self_pane_id)
+        self.reconciler = Reconciler(sock_path, self.q)
         self.input = InputReader(self.q)
         self.frame = 0
         self.muted = False
@@ -68,6 +70,7 @@ class Office:
         self._enter_screen()
         self.input.start()
         self.subscriber.start()
+        self.reconciler.start()
         last_render = 0.0
         next_tick = time.monotonic() + TICK_S
         try:
@@ -99,6 +102,7 @@ class Office:
         except KeyboardInterrupt:
             pass
         finally:
+            self.reconciler.stop()
             self.subscriber.stop()
             self.input.stop()
             self._leave_screen()
