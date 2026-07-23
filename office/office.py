@@ -325,9 +325,10 @@ class Office:
             # any status event handled since then is the newer truth.
             #
             # Membership is taken as authoritative all the same, which leaves
-            # one accepted window: a pane that closed while the refresh was in
-            # flight is re-added here, over the pane.closed the loop already
-            # applied, and stays until the next periodic reconcile evicts it.
+            # one accepted window, in both directions: a pane that closed
+            # while the refresh was in flight is re-added here over the
+            # pane.closed the loop already applied, and one that was created
+            # is dropped again - either way until the next periodic reconcile.
             # That is the same staleness the 60s reconcile has always had (its
             # pane.list is fetched off-loop too) and the same ghost it exists
             # to sweep (issue #1); the window here is one socket round-trip -
