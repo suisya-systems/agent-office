@@ -4,17 +4,20 @@ design.md sections 2 and 6. This module owns the loop and nothing else: the
 terminal is the Screen's, frame content is the Renderer's, escalation policy is
 the Escalator's, and each source of events runs in its own thread.
 
-**Threading contract.** Four threads feed one `queue.Queue` of (kind, payload)
+**Threading contract.** Five threads feed one `queue.Queue` of (kind, payload)
 tuples - Subscriber (herdr events), Reconciler (periodic pane.list), InputReader
-(stdin) and Notifier (toast results). None of them touch OfficeState, the
-Escalator or the Renderer. This loop is the *only* writer of OfficeState and the
-only caller of Escalator.tick()/on_result(), so no lock is needed anywhere: the
-queue is the entire thread boundary.
+(stdin), Notifier (toast results) and Commander (jump/filter results). None of
+them touch OfficeState, the Escalator or the Renderer. This loop is the *only*
+writer of OfficeState and the only caller of Escalator.tick()/on_result(), so no
+lock is needed anywhere: the queue is the entire thread boundary.
 
 The Escalator (section 7) and the state.json writer (section 8) run on the
 animation tick. Escalation is deliberately split in two - the Escalator decides
 *what* to send with no I/O at all and the Notifier thread does the sending - so
-a slow or rate-limited notification.show can never stall the render loop.
+a slow or rate-limited notification.show can never stall the render loop. The
+key handlers are split the same way for the same reason (issue #12): no branch
+below opens a socket, they hand the call to the Commander and pick the outcome
+up later as an ("action", ...) item.
 """
 
 import os
@@ -24,6 +27,7 @@ import sys
 import time
 
 from . import statefile
+from .commander import FOCUS, PANE_LIST, Commander
 from .config import Config
 from .config import load as load_config
 from .escalator import Escalator
@@ -34,7 +38,6 @@ from .renderer import Renderer, detect_caps, format_name
 from .screen import Screen
 from .state import OfficeState
 from .subscriber import Subscriber
-from . import protocol
 
 MIN_REDRAW_S = 0.04                                # cap redraws at ~25 fps
 
@@ -44,7 +47,9 @@ TOAST_HINT = ("toasts are off: set [ui.toast] delivery = \"herdr\" "
 
 class Office:
     def __init__(self, sock_path, self_pane_id, tier, truecolor, config=None):
-        self.sock_path = sock_path
+        # No socket path is kept on the Office itself: with the jump/filter
+        # calls moved onto the Commander, every socket in the process now
+        # belongs to one of the feeder threads (issue #12).
         self.config = config or Config()
         self.q = queue.Queue()
         self.state = OfficeState(self_pane_id=self_pane_id,
@@ -57,6 +62,7 @@ class Office:
         self.reconciler = Reconciler(sock_path, self.q)
         self.input = InputReader(self.q)
         self.notifier = Notifier(sock_path, self.q)
+        self.commander = Commander(sock_path, self.q)
         self.screen = Screen()
         self.escalator = Escalator(
             threshold_s=self.config.blocked_threshold_s,
@@ -87,6 +93,14 @@ class Office:
         self.config_warning = "; ".join(self.config.warnings)
         self.status_line = ""
         self.toast_hint = ""
+        # The "...ing" half of a status_line message that an in-flight action
+        # put there, so its result can take it back down without wiping a
+        # newer, unrelated notice that arrived in between.
+        self.pending_status = ""
+        # Refreshes still out on the Commander. Only the last one home takes
+        # the pending notice down; each carries its own "asked at" as a token,
+        # so overlapping presses never borrow each other's.
+        self.refreshes_in_flight = 0
 
     # -- main loop ------------------------------------------------------
 
@@ -101,6 +115,7 @@ class Office:
         self.screen.open()
         self.input.start()
         self.notifier.start()
+        self.commander.start()
         self.subscriber.start()
         self.reconciler.start()
         last_render = 0.0
@@ -140,6 +155,7 @@ class Office:
             self.reconciler.stop()
             self.subscriber.stop()
             self.notifier.stop()
+            self.commander.stop()
             self.input.stop()
             # Feeder threads are stopped, so the state is settled: record it
             # rather than whatever the last periodic write happened to hold.
@@ -176,13 +192,7 @@ class Office:
         if kind == "key":
             self._handle_key(payload)
         elif kind == "snapshot":
-            self.state.reconcile_snapshot(payload)
-            if self._seed_blocked:
-                # design.md section 7: adopt the previous run's blocked_since
-                # so an agent stuck before the office opened is not given a
-                # fresh countdown. Applies once, on the first snapshot.
-                self.state.seed_blocked_since(self._seed_blocked)
-                self._seed_blocked = None
+            self._apply_snapshot(payload, seed=True)
         elif kind == "pane":
             self.state.ingest_pane(payload)
         elif kind == "closed":
@@ -203,8 +213,27 @@ class Office:
             self.state.remove_room(payload)
         elif kind == "notify_result":
             self._handle_notify_result(*payload)
+        elif kind == "action":
+            self._handle_action_result(*payload)
         elif kind == "log":
             self.status_line = payload
+
+    def _apply_snapshot(self, panes, seed=False, keep_status_since=None):
+        """Apply a pane.list; `seed` marks the authoritative Subscriber path.
+
+        Only that path may spend the recovered blocked_since: a refresh the
+        user asked for with `a` can land before the fleet is fully known -
+        before workspace labels have arrived, say - and would otherwise burn
+        the seed on a partial view, handing an already-stuck agent a fresh
+        countdown.
+        """
+        self.state.reconcile_snapshot(panes, keep_status_since=keep_status_since)
+        if seed and self._seed_blocked:
+            # design.md section 7: adopt the previous run's blocked_since so an
+            # agent stuck before the office opened is not given a fresh
+            # countdown. Applies once, on the first snapshot.
+            self.state.seed_blocked_since(self._seed_blocked)
+            self._seed_blocked = None
 
     def _handle_notify_result(self, note, reason):
         self.escalator.on_result(note, reason)
@@ -251,20 +280,72 @@ class Office:
             self.escalator.muted = self.muted
 
     def _jump(self, pane_id):
+        """Ask for the focus; say nothing yet (issue #12).
+
+        A successful jump announces itself - the terminal switches panes - so
+        the only thing worth showing is a failure, and that can only be known
+        once the Commander has been round the socket.
+        """
         if not pane_id:
             return
-        try:
-            protocol.pane_focus(self.sock_path, pane_id)
-        except Exception as exc:                          # noqa: BLE001
-            self.status_line = "jump failed: %s" % exc
+        self.commander.focus(pane_id)
 
     def _toggle_filter(self):
+        """Flip the filter now, refresh the fleet off-loop.
+
+        set_filter takes effect on the next frame, but widening to "all" needs
+        panes the office previously dropped, and those only arrive with the
+        pane.list the Commander is now fetching. Without a word on the status
+        line that gap reads as a dead keypress, so the pending notice goes up
+        immediately and comes down when the snapshot lands.
+        """
         new = "all" if self.state.filter_mode == "agents" else "agents"
         self.state.set_filter(new)
-        try:
-            self.state.reconcile_snapshot(protocol.pane_list(self.sock_path))
-        except Exception as exc:                          # noqa: BLE001
-            self.status_line = "filter refresh failed: %s" % exc
+        self._set_pending("filter %s; refreshing" % new)
+        self.refreshes_in_flight += 1
+        self.commander.list_panes(token=self.state.now())
+
+    def _handle_action_result(self, name, result, error, asked_at=None):
+        """Outcome of a Commander action, one socket round-trip after the key.
+
+        Only the refresh puts a pending notice up, so only the refresh's own
+        result takes it down: a jump that happens to land in between says its
+        piece without cancelling a refresh that is still in flight.
+        """
+        if name == PANE_LIST:
+            self.refreshes_in_flight = max(0, self.refreshes_in_flight - 1)
+        if error:
+            if name == PANE_LIST:
+                self.pending_status = ""      # superseded by the failure below
+            self.status_line = "%s failed: %s" % (
+                "jump" if name == FOCUS else "filter refresh", error)
+            return
+        if name == PANE_LIST:
+            # These panes are as herdr saw them when *this* refresh went out;
+            # any status event handled since then is the newer truth.
+            #
+            # Membership is taken as authoritative all the same, which leaves
+            # one accepted window, in both directions: a pane that closed
+            # while the refresh was in flight is re-added here over the
+            # pane.closed the loop already applied, and one that was created
+            # is dropped again - either way until the next periodic reconcile.
+            # That is the same staleness the 60s reconcile has always had (its
+            # pane.list is fetched off-loop too) and the same ghost it exists
+            # to sweep (issue #1); the window here is one socket round-trip -
+            # 2ms against herdr 0.7.4 - and self-healing, so it is documented
+            # rather than defended against with tombstones in OfficeState.
+            self._apply_snapshot(result, keep_status_since=asked_at)
+            if not self.refreshes_in_flight:
+                self._clear_pending()
+
+    def _set_pending(self, text):
+        self.pending_status = text
+        self.status_line = text
+
+    def _clear_pending(self):
+        if self.status_line == self.pending_status:
+            self.status_line = ""
+        self.pending_status = ""
 
 
 def run():

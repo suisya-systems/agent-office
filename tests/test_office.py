@@ -1,14 +1,25 @@
 """Tests for the office event loop's non-I/O wiring.
 
 Office's constructor opens no sockets and starts no threads, so the dispatch
-and status-line logic can be exercised directly with a bogus socket path.
+and status-line logic can be exercised directly with a bogus socket path. The
+last class does run the real loop, with every thread but the Commander stubbed
+out and the Commander's socket faked, to pin down issue #12: a stuck herdr must
+not stop the frames.
 """
 
+import signal
+import threading
+import time
 import unittest
 
+from office import commander as commander_mod
 from office.config import Config
 from office.escalator import Notification
 from office.office import TOAST_HINT, Office
+from office.screen import Screen
+
+
+WORKING_P1 = {"pane_id": "p1", "agent": "claude", "agent_status": "working"}
 
 
 def make_office(config=None):
@@ -93,6 +104,245 @@ class ConfigWiringTest(unittest.TestCase):
         self.assertTrue(office.muted)
         office._escalate()
         self.assertTrue(office.escalator.muted)
+
+
+class ActionFeedbackTest(unittest.TestCase):
+    """Jump/filter results arrive a socket round-trip after the keypress."""
+
+    def office(self):
+        office = make_office()
+        office.commander = RecordingCommander()
+        return office
+
+    def test_enter_only_queues_the_focus(self):
+        office = self.office()
+        office.state.reconcile_snapshot([{"pane_id": "p1", "agent": "claude"}])
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, ["p1"])
+        self.assertEqual(office._status(), "")     # success speaks for itself
+
+    def test_a_late_jump_failure_reaches_the_status_line(self):
+        office = self.office()
+        office._handle(("action", ("focus", None, "herdr is down")))
+        self.assertIn("jump failed", office._status())
+        self.assertIn("herdr is down", office._status())
+
+    def test_filter_says_it_is_refreshing_until_the_panes_land(self):
+        office = self.office()
+        office._handle(("key", "a"))
+        self.assertEqual(office.state.filter_mode, "all")
+        self.assertEqual(office.commander.lists, 1)
+        self.assertIn("refreshing", office._status())
+        office._handle(("action", ("pane_list", [{"pane_id": "p1"}], None)))
+        self.assertEqual(office._status(), "")
+        self.assertIn("p1", office.state.desks)
+
+    def test_a_failed_refresh_replaces_the_pending_notice(self):
+        office = self.office()
+        office._handle(("key", "a"))
+        office._handle(("action", ("pane_list", None, "timed out")))
+        self.assertNotIn("refreshing", office._status())
+        self.assertIn("filter refresh failed", office._status())
+
+    def test_a_jump_landing_mid_refresh_leaves_the_notice_alone(self):
+        # Enter after `a`: the focus result comes back first, but the fleet
+        # the refresh will bring is still in flight, so the notice stands.
+        office = self.office()
+        office._handle(("key", "a"))
+        office._handle(("action", ("focus", None, None)))
+        self.assertIn("refreshing", office._status())
+
+    def test_a_status_event_outranks_the_refresh_it_overtook(self):
+        # The refresh's panes are as herdr saw them when `a` was pressed. A
+        # pane.agent_status_changed handled while it was in flight is newer,
+        # and rolling it back here would blank the escalation timer.
+        office = self.office()
+        office._handle(("snapshot", [{"pane_id": "p1", "agent": "claude",
+                                      "agent_status": "working"}]))
+        office._handle(("key", "a"))
+        office._handle(("status", {"pane_id": "p1", "agent_status": "blocked"}))
+        blocked_since = office.state.desks["p1"].blocked_since
+        office._handle(("action", ("pane_list", [WORKING_P1], None,
+                                   office.commander.tokens[0])))
+        self.assertEqual(office.state.desks["p1"].status, "blocked")
+        self.assertEqual(office.state.desks["p1"].blocked_since, blocked_since)
+
+    def test_overlapping_refreshes_keep_their_own_timestamps(self):
+        # Two `a` presses in flight at once: the first result home must not
+        # take the second one's token with it, or the second would be applied
+        # as if nothing could have overtaken it.
+        office = self.office()
+        office._handle(("snapshot", [{"pane_id": "p1", "agent": "claude",
+                                      "agent_status": "working"}]))
+        office._handle(("key", "a"))
+        office._handle(("key", "a"))
+        first, second = office.commander.tokens
+        office._handle(("status", {"pane_id": "p1", "agent_status": "blocked"}))
+        office._handle(("action", ("pane_list", [WORKING_P1], None, first)))
+        self.assertIn("refreshing", office._status())   # one still out
+        office._handle(("action", ("pane_list", [WORKING_P1], None, second)))
+        self.assertEqual(office.state.desks["p1"].status, "blocked")
+        self.assertEqual(office._status(), "")
+
+    def test_the_refresh_still_brings_in_panes_it_had_not_seen(self):
+        office = self.office()
+        office._handle(("key", "a"))
+        office._handle(("action", ("pane_list", [{"pane_id": "p9",
+                                                  "agent_status": "blocked"}],
+                                   None)))
+        self.assertEqual(office.state.desks["p9"].status, "blocked")
+
+    def test_a_user_refresh_does_not_spend_the_startup_seed(self):
+        # design.md section 7: the recovered blocked_since belongs to the
+        # authoritative startup snapshot. An `a` refresh can arrive first (and
+        # on a partial fleet), and must not consume it - the desk would then
+        # start a fresh 90s countdown instead of inheriting its real one.
+        office = self.office()
+        # Taken from the model's own clock, not written out as a constant: a
+        # bare 1000.0 is in the *future* on a freshly booted machine, where
+        # time.monotonic() is still a two-digit number, and would be ignored
+        # for a reason that has nothing to do with this test (CI, PR #13).
+        seeded = office.state.now() - 500.0
+        office._seed_blocked = {"p1": seeded}
+        panes = [{"pane_id": "p1", "agent": "claude", "agent_status": "blocked"}]
+        office._handle(("action", ("pane_list", panes, None)))
+        self.assertNotEqual(office.state.desks["p1"].blocked_since, seeded)
+        office._handle(("snapshot", panes))
+        self.assertEqual(office.state.desks["p1"].blocked_since, seeded)
+
+    def test_a_newer_notice_outlives_the_pending_one(self):
+        # The refresh result must clear its own message, not whatever the
+        # subscriber or notifier put up while the socket was in flight.
+        office = self.office()
+        office._handle(("key", "a"))
+        office._handle(("log", "reconnecting in 0.5s"))
+        office._handle(("action", ("pane_list", [], None)))
+        self.assertIn("reconnecting", office._status())
+
+
+class RecordingCommander:
+    """Commander stand-in: records the asks, reports nothing back."""
+
+    def __init__(self):
+        self.focused = []
+        self.tokens = []                  # one per pane.list request
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def focus(self, pane_id, token=None):
+        self.focused.append(pane_id)
+
+    def list_panes(self, token=None):
+        self.tokens.append(token)
+
+    @property
+    def lists(self):
+        return len(self.tokens)
+
+
+class StuckProtocol:
+    """office.protocol stand-in whose calls hang until the test lets go."""
+
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.focused = []
+
+    def pane_focus(self, _sock, pane_id, timeout=5.0):
+        self.focused.append(pane_id)
+        self.entered.set()
+        self.release.wait(5.0)
+
+    def pane_list(self, _sock, timeout=5.0):
+        self.entered.set()
+        self.release.wait(5.0)
+        return []
+
+
+class StubThread:
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+class StubWriter:
+    def maybe_write(self, *_):
+        pass
+
+    def write_stopped(self, *_):
+        pass
+
+
+class FrameCounter:
+    """Screen stream that counts frames and stops the office after `frames`."""
+
+    def __init__(self, office, frames, on_done=None):
+        self.office = office
+        self.frames = frames
+        self.on_done = on_done
+        self.count = 0
+        self.done = False
+
+    def write(self, _text):
+        self.count += 1
+        if self.count >= self.frames and not self.done:
+            self.done = True
+            self.office._quit()
+            if self.on_done:
+                self.on_done()      # unstick herdr so teardown is not a wait
+
+    def flush(self):
+        pass
+
+
+class LoopKeepsTickingTest(unittest.TestCase):
+    """Issue #12: a keypress whose socket call hangs must not stop the frames.
+
+    Before the Commander, `_jump` called pane.focus inline, so this loop would
+    have sat inside the stuck fake for the whole socket timeout - no ticks, no
+    redraws, no way to quit.
+    """
+
+    def setUp(self):
+        self.real_protocol = commander_mod.protocol
+        self.handlers = [(sig, signal.getsignal(sig))
+                         for sig in (getattr(signal, "SIGWINCH", None),
+                                     getattr(signal, "SIGTERM", None))
+                         if sig is not None]
+        self.stuck = StuckProtocol()
+        commander_mod.protocol = self.stuck
+
+    def tearDown(self):
+        self.stuck.release.set()
+        commander_mod.protocol = self.real_protocol
+        for sig, handler in self.handlers:
+            signal.signal(sig, handler)
+
+    def test_a_stuck_pane_focus_does_not_freeze_the_loop(self):
+        office = make_office(Config(fps=30))
+        office.subscriber = office.reconciler = office.input = StubThread()
+        office.notifier = StubThread()
+        office.writer = StubWriter()
+        counter = FrameCounter(office, frames=8,
+                               on_done=self.stuck.release.set)
+        office.screen = Screen(stream=counter)
+        office.state.reconcile_snapshot([{"pane_id": "p1", "agent": "claude"}])
+        office.q.put(("key", "enter"))
+
+        started = time.monotonic()
+        office.run()
+        elapsed = time.monotonic() - started
+
+        self.assertTrue(self.stuck.entered.is_set())   # the jump did go out
+        self.assertEqual(self.stuck.focused, ["p1"])
+        self.assertGreaterEqual(counter.count, 8)      # and frames kept coming
+        self.assertLess(elapsed, 2.0, "the loop waited on the socket")
 
 
 if __name__ == "__main__":
