@@ -42,6 +42,13 @@ from .subscriber import Subscriber
 
 MIN_REDRAW_S = 0.04                                # cap redraws at ~25 fps
 
+# How long to leave a failed tier 2 overlay alone before trying it again. A
+# transient socket error should heal within a redraw or two, but the refusal
+# may also be standing - `herdr server reload-config` can switch
+# experimental.kitty_graphics back off underneath a running office - and that
+# must not turn into a pane.graphics.set on every single redraw.
+GRAPHICS_RETRY_S = 5.0
+
 TOAST_HINT = ("toasts are off: set [ui.toast] delivery = \"herdr\" "
               "in your herdr config")
 
@@ -106,6 +113,9 @@ class Office:
         # anything - which is what keeps the static overlay (design.md risk 6)
         # from re-encoding a PNG on every animation tick.
         self._overlay_boxes = None
+        # Monotonic time before which a re-send is not attempted; see
+        # GRAPHICS_RETRY_S and _handle_graphics_result.
+        self._overlay_retry_at = 0.0
         # The "...ing" half of a status_line message that an in-flight action
         # put there, so its result can take it back down without wiping a
         # newer, unrelated notice that arrived in between.
@@ -216,6 +226,9 @@ class Office:
         boxes = tuple(self.renderer.sprite_boxes)
         if boxes == self._overlay_boxes:
             return
+        if self._overlay_retry_at and self.state.now() < self._overlay_retry_at:
+            return                      # a recent send failed; let it settle
+        self._overlay_retry_at = 0.0
         self._overlay_boxes = boxes
         if boxes:
             self.graphics.set_boxes(boxes, self.renderer.art)
@@ -298,8 +311,19 @@ class Office:
         piece plainly. A failure is worth a line because the tier 1 art is
         still underneath: the office looks fine and the user would otherwise
         have no way to tell the overlay never arrived.
+
+        A failed send also has to be forgotten, not remembered: `_overlay_boxes`
+        records what is believed to be *on screen*, and after a failure nothing
+        is. Left set, it would match the next frame's boxes and the office
+        would sit there with no overlay until some unrelated change happened to
+        move a desk. Clearing it schedules a re-send, rate-limited so a
+        standing refusal costs one call every GRAPHICS_RETRY_S rather than one
+        per redraw.
         """
         self.graphics_note = "" if ok else "graphics: %s" % message
+        if not ok:
+            self._overlay_boxes = None
+            self._overlay_retry_at = self.state.now() + GRAPHICS_RETRY_S
 
     def _handle_key(self, name):
         cols, _ = self.screen.size()

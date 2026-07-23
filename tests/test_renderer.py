@@ -200,6 +200,36 @@ class Tier2LayoutTest(unittest.TestCase):
         r.render(_state(), 40, 12)                  # too small: compact view
         self.assertEqual(r.sprite_boxes, [])
 
+    def test_no_box_ever_reaches_past_the_last_frame_line(self):
+        """Regression: the clip bound was one too generous.
+
+        At 80x28 with 20 desks the bottom row of desks starts on frame line 23
+        and a sprite is 6 rows tall, so it ran to line 28 - one past the last
+        line the frame actually has. The image was placed over the status line
+        or off the pane, in the very place the text layout had scrolled away
+        from. Swept across sizes and selections rather than pinned to the one
+        that happened to expose it.
+        """
+        s = OfficeState()
+        for i in range(20):
+            s.ingest_pane({"pane_id": "p%02d" % i, "workspace_id": "w1",
+                           "agent": "claude", "agent_status": "working"})
+        r = Renderer(tier=2, truecolor=True)
+        for rows in range(24, 40):
+            for cols in (80, 100, 120):
+                for pick in (0, 7, 19):
+                    s.select("p%02d" % pick)
+                    for status in ("", "a warning"):
+                        frame = r.render(s, cols, rows, status=status)
+                        lines = frame.split("\r\n")
+                        self.assertEqual(len(lines), rows)
+                        for row, _c, _v, _a, _f in r.sprite_boxes:
+                            self.assertGreaterEqual(row, 1)
+                            self.assertLessEqual(
+                                row + r.art_rows, len(lines),
+                                "%dx%d sel=%d: box at row %d overruns"
+                                % (cols, rows, pick, row))
+
     def test_boxes_scrolled_off_the_screen_are_dropped(self):
         s = OfficeState()
         for i in range(40):

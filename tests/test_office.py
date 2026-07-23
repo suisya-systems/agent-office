@@ -13,6 +13,7 @@ import time
 import unittest
 
 from office import commander as commander_mod
+from office import office as office_mod
 from office.config import Config
 from office.escalator import Notification
 from office.office import TOAST_HINT, Office
@@ -172,6 +173,40 @@ class GraphicsWiringTest(unittest.TestCase):
         self.assertIn("feature_disabled", office._status())
         office._handle(("graphics", (True, "")))
         self.assertEqual(office._status(), "")
+
+    def test_a_failed_send_is_retried_rather_than_believed(self):
+        """Regression: the cache recorded intent, not what is on screen.
+
+        After a failed set, _overlay_boxes still matched the frame, so the
+        office believed the image was up and never resent it - the overlay
+        stayed missing until some unrelated change moved a desk.
+        """
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office._handle(("graphics", (False, "busy")))
+        office._sync_overlay()                     # still inside the backoff
+        self.assertEqual(len(fake.calls), 1)
+        clock[0] += office_mod.GRAPHICS_RETRY_S + 0.1
+        office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["set", "set"])
+
+    def test_a_standing_refusal_does_not_send_on_every_redraw(self):
+        # herdr can turn experimental.kitty_graphics back off under a running
+        # office (server reload-config), so the failure path must be bounded.
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        for _ in range(50):
+            office._sync_overlay()
+            office._handle(("graphics", (False, "feature_disabled")))
+            clock[0] += 0.04                       # MIN_REDRAW_S: ~25 fps
+        self.assertLessEqual(len(fake.calls), 2)
 
     def test_mute_key_reaches_the_escalator(self):
         office = make_office()

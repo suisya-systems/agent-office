@@ -316,10 +316,15 @@ class Renderer:
         box sits at `1 + body_row - offset`. A box only partly on screen is
         dropped rather than cropped: a half-drawn character reads as a glitch,
         and the text art underneath is still there to show it properly.
+
+        The window's last usable line is `window_len - 1`, so a box is fully on
+        screen only while `row + art_rows <= window_len`. Being one out here
+        puts the bottom row of an image past the end of the frame - over the
+        status line, or off the pane entirely.
         """
         for body_row, col, visual, agent, focused in boxes:
             row = 1 + body_row - offset
-            if row < 1 or row + self.art_rows > window_len + 1:
+            if row < 1 or row + self.art_rows > window_len:
                 continue
             self.sprite_boxes.append((row, col, visual, agent, focused))
 
