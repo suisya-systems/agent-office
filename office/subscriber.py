@@ -121,11 +121,28 @@ class Subscriber:
             req_id="office-L")
         self._start_reader(self._l_sock, l_buf, self._handle_l,
                            self._l_broken, "_l_sock", "office-L-reader")
-        # 2. Initial snapshot.
+        # 2. Room labels, then the initial snapshot. Labels go first because
+        # pane.list carries no workspace label in herdr 0.7.4, and the
+        # [include].workspaces globs (section 8) match on the label - a desk
+        # snapshot applied before the labels are known would be filtered
+        # against bare workspace ids.
+        self._emit_rooms()
         self._emit("snapshot", protocol.pane_list(self.sock_path))
         # 3. Connection S for all live panes, then re-snapshot to close the gap.
         if self._open_s():
             self._emit("snapshot", protocol.pane_list(self.sock_path))
+
+    def _emit_rooms(self):
+        """Seed island names from workspace.list; never fatal if it fails."""
+        try:
+            workspaces = protocol.workspace_list(self.sock_path)
+        except Exception as exc:                           # noqa: BLE001
+            self._emit("log", "workspace.list failed: %s" % exc)
+            return
+        for workspace in workspaces:
+            wid, label = workspace.get("workspace_id"), workspace.get("label")
+            if wid and label:
+                self._emit("room", (wid, label))
 
     def _open_s(self):
         """Open a fresh S connection for the current live pane set.

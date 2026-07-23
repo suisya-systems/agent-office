@@ -93,6 +93,55 @@ class MembershipTest(unittest.TestCase):
         self.assertEqual(s.desks["p1"].agent, "claude")
 
 
+class IncludeFilterTest(unittest.TestCase):
+    """design.md section 8 [include]: optional narrowing of the fleet."""
+
+    def test_exclude_agents(self):
+        s = OfficeState(exclude_agents=("codex",))
+        s.ingest_pane(pane("p1", agent="claude"))
+        s.ingest_pane(pane("p2", agent="codex"))
+        self.assertEqual(sorted(s.desks), ["p1"])
+
+    def test_exclude_agents_drops_a_desk_that_later_identifies(self):
+        s = OfficeState(filter_mode="all", exclude_agents=("codex",))
+        s.ingest_pane(pane("p1", agent=None, status="unknown"))
+        self.assertIn("p1", s.desks)
+        s.set_status("p1", "working", agent="codex")
+        self.assertNotIn("p1", s.desks)
+
+    def test_workspace_glob_matches_the_room_label(self):
+        s = OfficeState(workspace_globs=("team-*",))
+        s.set_room_label("w1", "team-alpha")
+        s.ingest_pane(pane("p1", ws="w1"))
+        s.ingest_pane(pane("p2", ws="w2"))          # no label -> id "w2"
+        self.assertEqual(sorted(s.desks), ["p1"])
+
+    def test_workspace_glob_can_match_a_raw_id(self):
+        s = OfficeState(workspace_globs=("w1",))
+        s.ingest_pane(pane("p1", ws="w1"))
+        s.ingest_pane(pane("p2", ws="w2"))
+        self.assertEqual(sorted(s.desks), ["p1"])
+
+    def test_rename_out_of_the_glob_drops_the_desks(self):
+        s = OfficeState(workspace_globs=("team-*",))
+        s.set_room_label("w1", "team-alpha")
+        s.ingest_pane(pane("p1", ws="w1"))
+        self.assertIn("p1", s.desks)
+        s.set_room_label("w1", "personal")
+        self.assertNotIn("p1", s.desks)
+
+    def test_no_globs_means_everything_is_included(self):
+        s = OfficeState()
+        s.ingest_pane(pane("p1", ws="anything"))
+        self.assertIn("p1", s.desks)
+
+    def test_glob_is_case_sensitive(self):
+        s = OfficeState(workspace_globs=("Team-*",))
+        s.set_room_label("w1", "team-alpha")
+        s.ingest_pane(pane("p1", ws="w1"))
+        self.assertEqual(len(s.desks), 0)
+
+
 class StatusTimingTest(unittest.TestCase):
     def setUp(self):
         self.clk = FakeClock()

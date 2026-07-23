@@ -85,3 +85,30 @@ def pane_list(sock_path: str, timeout: float = 5.0):
 
 def pane_focus(sock_path: str, pane_id: str, timeout: float = 5.0):
     return request(sock_path, "pane.focus", {"pane_id": pane_id}, timeout=timeout)
+
+
+def workspace_list(sock_path: str, timeout: float = 5.0):
+    """Workspaces with their labels (the office's room names, section 4).
+
+    pane.list carries no workspace label in herdr 0.7.4, so without this the
+    islands would be named after raw workspace ids until a workspace.renamed
+    event happened to arrive.
+    """
+    result = request(sock_path, "workspace.list", {}, timeout=timeout)
+    return (result or {}).get("workspaces", [])
+
+
+def notification_show(sock_path: str, title: str, body: str = "",
+                      sound: str = "request", timeout: float = 5.0) -> str:
+    """Show a toast; return the server's reason (design.md section 7).
+
+    Reasons are `shown` / `disabled` / `rate_limited` / `no_foreground_client`
+    / `busy` (research section 6). The Escalator decides what each one means.
+    """
+    params = {"title": title}
+    if body:
+        params["body"] = body
+    if sound:
+        params["sound"] = sound
+    result = request(sock_path, "notification.show", params, timeout=timeout)
+    return (result or {}).get("reason", "shown")
