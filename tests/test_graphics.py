@@ -380,6 +380,32 @@ class SenderTest(unittest.TestCase):
         self.assertGreater(width, 0)
         self.assertEqual(placement["grid_cols"] * graphics.SCALE, width)
 
+    def test_a_failed_set_takes_the_stale_image_down(self):
+        """Regression: a wrong overlay outlived the frame it belonged to.
+
+        The previous image stays on the pane when a `set` fails, but the text
+        under it has already been redrawn - reflowed by a resize, or replaced
+        by the help overlay. Sprites in the wrong place are worse than none,
+        since the tier 1 art underneath stands on its own.
+        """
+        fake = FakeProtocol(
+            fail_with=self.real.ProtocolError("busy", "server busy"))
+        sender = self.sender(fake)
+        r = Renderer(tier=2, truecolor=True)
+        r.render(_state(), 120, 40)
+        sender._run(("set", (r.sprite_boxes, r.art)))
+        self.assertEqual([c[0] for c in fake.calls], ["set", "clear"])
+        (_, (ok, message)), = self.drain()
+        self.assertFalse(ok)
+        self.assertEqual(message, "busy")
+
+    def test_a_failed_clear_is_not_retried_on_the_spot(self):
+        # Nothing further to try, and the loop's backoff owns the retry.
+        fake = FakeProtocol(fail_with=OSError("gone"))
+        sender = self.sender(fake)
+        sender._run(("clear", None))
+        self.assertEqual([c[0] for c in fake.calls], ["clear"])
+
     def test_boxes_that_compose_to_nothing_clear_instead(self):
         fake = FakeProtocol()
         sender = self.sender(fake)

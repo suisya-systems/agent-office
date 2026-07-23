@@ -216,6 +216,7 @@ class GraphicsSender:
 
     def _run(self, item):
         kind, payload = item
+        drew = False
         try:
             if kind == "clear":
                 protocol.pane_graphics_clear(self.sock_path, self.pane_id)
@@ -225,16 +226,37 @@ class GraphicsSender:
                 if overlay is None:
                     protocol.pane_graphics_clear(self.sock_path, self.pane_id)
                 else:
+                    drew = True
                     protocol.pane_graphics_set(
                         self.sock_path, self.pane_id, overlay.data,
                         overlay.width, overlay.height, overlay.placement)
         except protocol.ProtocolError as exc:
-            self._report(False, exc.code or "error")
+            self._failed(drew, exc.code or "error")
             return
         except Exception as exc:                           # noqa: BLE001
-            self._report(False, "%s" % exc)
+            self._failed(drew, "%s" % exc)
             return
         self._report(True, "")
+
+    def _failed(self, drew, message):
+        """Report a failure, taking any stale image down on the way out.
+
+        A `set` that fails may leave the *previous* overlay on the pane, and
+        the frame underneath has already moved on - a resize reflowed the
+        desks, or `?` replaced them with the help text. Sprites in the wrong
+        place are worse than no sprites at all, because the tier 1 art below
+        is complete and correct on its own. So the image comes down.
+
+        Best-effort by design: whatever refused the `set` will likely refuse
+        this too, and there is nothing further to try if it does. The loop
+        retries the whole update after its backoff.
+        """
+        if drew:
+            try:
+                protocol.pane_graphics_clear(self.sock_path, self.pane_id)
+            except Exception:                              # noqa: BLE001
+                pass
+        self._report(False, message)
 
     def _report(self, ok, message):
         self.out.put(("graphics", (ok, message)))
