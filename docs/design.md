@@ -275,7 +275,7 @@ command = ["<runtime>", "office"]
 | half-block ターミナル描画（pixtuoid） | 本設計 tier 1 と同手法であり、実運用例として妥当性の裏付けになる。MIT なので実装時の参照可（コード流用時は MIT 表記を継承） | 反映済み（§5 tier 1） |
 | モニタ発光色でツール種別を表現（pixtuoid） | herdr はツール粒度のイベントを配らない（`AgentStatus` 5 値のみ）ため現状は実現不可。`pane.output_matched` で部分近似は可能だがエージェント依存のパターン整備が必要 | 見送り（将来 herdr がツールイベントを配れば再検討） |
 | レイアウトエディタ（Pixel Agents） | 楽しさへの寄与は大きいが Stage 2 には過剰。まず自動レイアウト（§4 の安定ソート + 島）で成立させる | 見送り。将来拡張として state 側にレイアウト上書きの余地だけ確保（§8 設定の拡張点） |
-| エージェント種別ごとのキャラ差し替え（Pixel Agents の 6 キャラ） | 低コストで愛着に効く。`agent` フィールド（claude/codex/...）でスプライトを切替えるだけ | **採用**: §8 `theme` をパレットだけでなく「agent 種別 → スプライト」対応に拡張（Stage 2 で任意実装） |
+| エージェント種別ごとのキャラ差し替え（Pixel Agents の 6 キャラ） | 低コストで愛着に効く。`agent` フィールド（claude/codex/...）でスプライトを切替えるだけ | **採用・実装済み（issue #6）**: キャラは `theme` とは独立の軸とした（キャラ = 形状、テーマ = 配色。直交させたほうが組合せが増える）。claude / codex / gemini / cursor / droid + 既定キャラ、tier 0/1/2 すべてで有効 |
 | boss/サブエージェント階層の可視化（claude-office） | herdr の可視単位はペインであり、サブエージェントはサーバーから見えない。原則（herdr が公開する情報だけで動く、§1 非ゴール）に反する | 対象外 |
 
 ライセンス面: 比較 3 OSS はいずれも MIT であり、設計アイデアの参照は自由。コード・アセットを流用する場合は MIT 表記を継承する。スプライトアセットは自作する（Pixel Agents が用いる JIK-A-4 Metro City 等のサードパーティアセットは、アセット固有ライセンスの確認が必要になるため流用しない）。
@@ -305,4 +305,4 @@ command = ["<runtime>", "office"]
 1. コア: Subscriber + OfficeState + tier 0/1 Renderer + ジャンプ（Linux/macOS）
 2. Escalator + 設定 + 単発 action + state.json
 3. Windows 対応 + マーケットプレイス公開（topic 付与、README、スクリーンショット）
-4. tier 2（kitty graphics）+ テーマ
+4. tier 2（kitty graphics）+ テーマ + エージェント別キャラ — **実装済み（issue #6）**。tier 2 の判定条件は §5 のとおり実測で精緻化した
