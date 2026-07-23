@@ -111,7 +111,12 @@ class Office:
         self.muted = False
         self.show_help = False
         self.running = True
-        self.status_line = "; ".join(self.config.warnings)
+        # Kept apart from status_line: a rejected config value is a standing
+        # authoring error the user has to go and fix, while status_line holds
+        # transient notices ("connected", "jump failed") that would otherwise
+        # overwrite the warnings milliseconds after startup.
+        self.config_warning = "; ".join(self.config.warnings)
+        self.status_line = ""
         self.toast_hint = ""
         self._resize = True
 
@@ -214,7 +219,8 @@ class Office:
         sys.stdout.flush()
 
     def _status(self):
-        parts = [p for p in (self.toast_hint, self.status_line) if p]
+        parts = [p for p in (self.config_warning, self.toast_hint,
+                             self.status_line) if p]
         return "  |  ".join(parts)
 
     # -- event dispatch -------------------------------------------------
