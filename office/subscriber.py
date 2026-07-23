@@ -120,7 +120,7 @@ class Subscriber:
             self.sock_path, [{"type": t} for t in L_SUBSCRIPTIONS],
             req_id="office-L")
         self._start_reader(self._l_sock, l_buf, self._handle_l,
-                           self._l_broken, "office-L-reader")
+                           self._l_broken, "_l_sock", "office-L-reader")
         # 2. Initial snapshot.
         self._emit("snapshot", protocol.pane_list(self.sock_path))
         # 3. Connection S for all live panes, then re-snapshot to close the gap.
@@ -151,13 +151,16 @@ class Subscriber:
             except Exception as exc:                       # noqa: BLE001
                 self._schedule_resub("status subscribe failed: %s" % exc)
                 return False
+        # Publish the new socket as current BEFORE closing the old one, so the
+        # old reader's finally sees it is no longer current and does NOT flag
+        # _s_broken (a deliberate replacement must not look like a drop).
         self._s_sock = new_sock
         self._s_broken.clear()
         self._s_backoff = RESUB_DEBOUNCE_S
         if new_sock is not None:
             self._start_reader(new_sock, s_buf, self._handle_s,
-                               self._s_broken, "office-S-reader")
-        if old is not None:
+                               self._s_broken, "_s_sock", "office-S-reader")
+        if old is not None and old is not new_sock:
             try:
                 old.close()
             except OSError:
@@ -194,13 +197,13 @@ class Subscriber:
 
     # -- reader threads -------------------------------------------------
 
-    def _start_reader(self, sock, buf, handler, broken_event, name):
+    def _start_reader(self, sock, buf, handler, broken_event, sock_attr, name):
         t = threading.Thread(target=self._read_loop,
-                             args=(sock, buf, handler, broken_event),
+                             args=(sock, buf, handler, broken_event, sock_attr),
                              daemon=True, name=name)
         t.start()
 
-    def _read_loop(self, sock, buf, handler, broken_event):
+    def _read_loop(self, sock, buf, handler, broken_event, sock_attr):
         try:
             sock.settimeout(None)
             while not self._stop.is_set():
@@ -219,7 +222,9 @@ class Subscriber:
         except OSError:
             pass
         finally:
-            if not self._stop.is_set():
+            # Only report a real drop of the *current* socket; a socket that has
+            # since been replaced was closed on purpose (make-before-break).
+            if not self._stop.is_set() and getattr(self, sock_attr) is sock:
                 broken_event.set()
                 self._wake.set()
 

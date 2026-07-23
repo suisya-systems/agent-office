@@ -86,7 +86,14 @@ class OfficeState:
             self.desks[pane_id] = desk
         desk.workspace_id = info.get("workspace_id", desk.workspace_id)
         desk.tab_id = info.get("tab_id", desk.tab_id)
-        desk.agent = agent if agent is not None else desk.agent
+        # A full PaneInfo always carries agent_status, so its agent field is
+        # authoritative (agent=None means the agent was released -> clear it, so
+        # display falls back to title/label/id). The agent_detected partial has
+        # no agent_status; treat it as a hint that only sets a present agent.
+        if "agent_status" in info:
+            desk.agent = agent
+        elif agent is not None:
+            desk.agent = agent
         if info.get("display_agent") is not None:
             desk.display_agent = info["display_agent"]
         if info.get("label") is not None:

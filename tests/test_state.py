@@ -75,6 +75,23 @@ class MembershipTest(unittest.TestCase):
         s.remove_pane("p1")
         self.assertEqual(len(s.desks), 0)
 
+    def test_full_update_clears_released_agent_under_all(self):
+        s = OfficeState(filter_mode="all")
+        s.ingest_pane(pane("p1", agent="claude"))     # no title/label -> "claude"
+        self.assertEqual(s.desks["p1"].display_name, "claude")
+        # authoritative full PaneInfo with the agent released (key omitted)
+        s.ingest_pane({"pane_id": "p1", "workspace_id": "w1", "tab_id": "w1:t1",
+                       "agent_status": "unknown"})
+        self.assertIsNone(s.desks["p1"].agent)
+        self.assertEqual(s.desks["p1"].display_name, "p1")   # falls back to id
+
+    def test_agent_detected_partial_does_not_clear_agent(self):
+        s = OfficeState(filter_mode="all")
+        s.ingest_pane(pane("p1", agent="claude"))
+        # a partial upsert (no agent_status, no agent) must not wipe the agent
+        s.ingest_pane({"pane_id": "p1", "workspace_id": "w1"})
+        self.assertEqual(s.desks["p1"].agent, "claude")
+
 
 class StatusTimingTest(unittest.TestCase):
     def setUp(self):
