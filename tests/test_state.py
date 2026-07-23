@@ -148,6 +148,16 @@ class OrderingTest(unittest.TestCase):
         self.assertEqual(islands[0][1], "room-one")
         self.assertEqual(islands[1][1], "w2")             # falls back to id
 
+    def test_pane_move_rehomes_desk(self):
+        # a pane_moved upsert carries the same pane_id with a new workspace/tab
+        s = OfficeState()
+        s.ingest_pane(pane("p1", ws="w1", tab="w1:t1"))
+        self.assertEqual(s.islands()[0][0], "w1")
+        s.ingest_pane(pane("p1", ws="w2", tab="w2:t1"))   # moved to w2
+        self.assertEqual(len(s.desks), 1)
+        self.assertEqual(s.desks["p1"].workspace_id, "w2")
+        self.assertEqual(s.islands()[0][0], "w2")
+
     def test_remove_room_drops_desks(self):
         s = OfficeState()
         s.ingest_pane(pane("w1:p1", ws="w1"))

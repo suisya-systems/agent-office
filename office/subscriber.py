@@ -40,7 +40,7 @@ from . import protocol
 
 L_SUBSCRIPTIONS = [
     "pane.created", "pane.closed", "pane.exited", "pane.updated",
-    "pane.focused", "pane.agent_detected",
+    "pane.moved", "pane.focused", "pane.agent_detected",
     "workspace.created", "workspace.renamed", "workspace.closed",
 ]
 
@@ -242,7 +242,10 @@ class Subscriber:
         # data.type (pane_created, ...). Normalize dotted variants too so we
         # stay robust if a herdr build echoes the subscribed dotted name.
         kind = (data.get("type") or obj.get("event") or "").replace(".", "_")
-        if kind in ("pane_created", "pane_updated"):
+        if kind in ("pane_created", "pane_updated", "pane_moved"):
+            # pane_moved carries the full PaneInfo with the new tab/workspace
+            # (same pane_id), so upserting it re-homes the desk to the right
+            # island. S already covers the pane, so no resubscribe is needed.
             pane = data.get("pane")
             if pane and pane.get("pane_id"):
                 if kind == "pane_created":
