@@ -177,17 +177,25 @@ class StateWriter:
             return True
         return False
 
-    def write_stopped(self) -> bool:
-        """Final write on shutdown: keep the data, drop the liveness claim."""
+    def write_stopped(self, state=None, escalated=()) -> bool:
+        """Final write on shutdown: fresh data, minus the liveness claim.
+
+        `state` must be passed whenever it is still available: reusing the last
+        periodic snapshot would stamp up-to-10-second-old desks with a current
+        `updated_at`, and a restart inside SEED_MAX_GAP_S would then inherit
+        blocked_since values that no longer describe the fleet.
+        """
         if not self.path:
             return False
+        rows = (self._desk_rows(state, escalated) if state is not None
+                else (self._last_desks or []))
         return self._write({
             "version": STATE_VERSION,
             "updated_at": self._wall(),
             "running": False,
             "office_pane_id": None,
             "pid": os.getpid(),
-            "desks": self._to_epoch_rows(self._last_desks or []),
+            "desks": self._to_epoch_rows(rows),
         })
 
     # -- internals ---------------------------------------------------

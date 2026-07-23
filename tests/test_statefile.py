@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 from office import statefile
-from office.cli import pick_blocked
+from office.cli import pick_blocked, visible_panes
+from office.config import Config
 from office.state import OfficeState
 
 
@@ -83,11 +84,29 @@ class WriterTest(unittest.TestCase):
     def test_write_stopped_drops_the_liveness_claim(self):
         self.state.ingest_pane(pane("p1", status="blocked"))
         self.writer.maybe_write(self.state)
-        self.assertTrue(self.writer.write_stopped())
+        self.assertTrue(self.writer.write_stopped(self.state))
         data = self.read()
         self.assertFalse(data["running"])
         self.assertIsNone(data["office_pane_id"])
         self.assertEqual(len(data["desks"]), 1)      # data survives for jumps
+
+    def test_write_stopped_records_changes_since_the_last_write(self):
+        # regression: reusing the last periodic snapshot stamped stale desks
+        # with a current updated_at, so a quick restart inherited a
+        # blocked_since that no longer described the fleet
+        self.state.ingest_pane(pane("p1", status="blocked"))
+        self.writer.maybe_write(self.state)
+        self.mono.advance(1)
+        self.state.set_status("p1", "working")       # unblocked, then quit
+        self.writer.write_stopped(self.state)
+        self.assertEqual(self.read()["desks"][0]["status"], "working")
+        self.assertIsNone(self.read()["desks"][0]["blocked_since"])
+
+    def test_write_stopped_without_state_keeps_the_last_snapshot(self):
+        self.state.ingest_pane(pane("p1", status="blocked"))
+        self.writer.maybe_write(self.state)
+        self.assertTrue(self.writer.write_stopped())
+        self.assertEqual(self.read()["desks"][0]["status"], "blocked")
 
     def test_unwritable_path_is_survivable(self):
         writer = statefile.StateWriter(os.path.join(self.dir.name, "f", "x", ""),
@@ -289,6 +308,42 @@ class PickBlockedTest(unittest.TestCase):
         recorded = (statefile.blocked_epoch_map(live)
                     if statefile.is_live(live, wall_now=1010.0) else {})
         self.assertEqual(pick_blocked(self.PANES, recorded), "pB")
+
+
+class VisiblePanesTest(unittest.TestCase):
+    """The global jump action must respect [include] (design.md section 8)."""
+
+    PANES = [pane("p1", ws="w1", agent="claude", status="blocked"),
+             pane("p2", ws="w1", agent="codex", status="blocked"),
+             pane("p3", ws="w2", agent="claude", status="blocked")]
+
+    def ids(self, cfg, sock="/nonexistent.sock"):
+        return [p["pane_id"] for p in visible_panes(sock, self.PANES, cfg)]
+
+    def test_default_config_keeps_everything(self):
+        self.assertEqual(self.ids(Config()), ["p1", "p2", "p3"])
+
+    def test_excluded_agent_is_not_a_jump_target(self):
+        cfg = Config(exclude_agents=("codex",))
+        self.assertEqual(self.ids(cfg), ["p1", "p3"])
+        # and so the action picks the next blocked pane, not the excluded one
+        self.assertEqual(pick_blocked(visible_panes("/nonexistent.sock", self.PANES, cfg)),
+                         "p1")
+
+    def test_workspace_glob_without_labels_matches_raw_ids(self):
+        # workspace.list is unreachable here, so matching falls back to ids
+        self.assertEqual(self.ids(Config(workspaces=("w2",))), ["p3"])
+
+    def test_workspace_glob_excluding_everything_yields_no_target(self):
+        cfg = Config(workspaces=("nothing-*",))
+        self.assertIsNone(pick_blocked(visible_panes("/nonexistent.sock", self.PANES, cfg)))
+
+    def test_filter_all_keeps_agentless_panes(self):
+        panes = [pane("p9", agent=None, status="blocked")]
+        self.assertEqual(
+            [p["pane_id"] for p in visible_panes("/nonexistent.sock", panes,
+                                                 Config(filter="all"))],
+            ["p9"])
 
 
 class SeedBlockedSinceTest(unittest.TestCase):

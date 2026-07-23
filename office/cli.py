@@ -21,6 +21,7 @@ import sys
 
 from . import config as config_mod
 from . import office, protocol, statefile
+from .state import OfficeState
 
 PANE_TITLE = "Agent Office"          # manifest [[panes]].title == the pane label
 
@@ -98,6 +99,7 @@ def action_jump_blocked():
     except Exception as exc:                              # noqa: BLE001
         sys.stderr.write("pane.list failed: %s\n" % exc)
         return 1
+    panes = visible_panes(sock, panes, config_mod.load())
     # design.md section 6: the recorded blocked_since is authoritative only
     # *while the office is running*. A stopped file's timestamps predate an
     # unknown stretch of time in which an agent may have unblocked and blocked
@@ -115,6 +117,32 @@ def action_jump_blocked():
         sys.stderr.write("pane.focus failed: %s\n" % exc)
         return 1
     return 0
+
+
+def visible_panes(sock, panes, cfg):
+    """Narrow a pane.list to what the office itself would show.
+
+    Without this the global jump action could focus a pane the user filtered
+    out with [include] (design.md section 8) - an excluded `codex` agent, say,
+    that happens to be the only blocked one. Rather than reimplement the rules,
+    this runs the panes through OfficeState, so the action and the resident
+    view can never disagree about who is in the fleet.
+    """
+    state = OfficeState(filter_mode=cfg.filter,
+                        workspace_globs=cfg.workspaces,
+                        exclude_agents=cfg.exclude_agents)
+    if cfg.workspaces:
+        # Workspace globs match the label, which pane.list does not carry.
+        try:
+            for workspace in protocol.workspace_list(sock):
+                wid, label = (workspace.get("workspace_id"),
+                              workspace.get("label"))
+                if wid and label:
+                    state.set_room_label(wid, label)
+        except Exception:                                 # noqa: BLE001
+            pass                        # fall back to matching raw ids
+    state.reconcile_snapshot(panes)
+    return [pane for pane in panes if pane.get("pane_id") in state.desks]
 
 
 def pick_blocked(panes, blocked_since_by_pane=None):

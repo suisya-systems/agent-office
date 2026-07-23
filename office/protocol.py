@@ -19,8 +19,15 @@ class ProtocolError(Exception):
 
 def connect(sock_path: str, timeout: float = 5.0) -> socket.socket:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    s.connect(sock_path)
+    try:
+        s.settimeout(timeout)
+        s.connect(sock_path)
+    except BaseException:
+        # A failed connect would otherwise leak the fd, and the Subscriber
+        # retries on a backoff loop - it must not bleed descriptors while the
+        # herdr server is down.
+        s.close()
+        raise
     return s
 
 

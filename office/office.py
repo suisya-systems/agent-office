@@ -187,7 +187,10 @@ class Office:
             self.subscriber.stop()
             self.notifier.stop()
             self.input.stop()
-            self.writer.write_stopped()
+            # Feeder threads are stopped, so the state is settled: record it
+            # rather than whatever the last periodic write happened to hold.
+            self.writer.write_stopped(self.state,
+                                      self.escalator.escalated_ids())
             self._leave_screen()
 
     def _quit(self):
