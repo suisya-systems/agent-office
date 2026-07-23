@@ -102,9 +102,11 @@ speech bubble turns from `!` to a red `!!` on screen. Details worth knowing:
 - **Reminders continue** every `renotify_interval_s` while the agent is still
   blocked, labelled `2nd reminder`, `3rd reminder`, and so on.
 - **Unblocking resets everything** — the next block starts a fresh countdown.
-- **An agent that was already blocked before you opened the office pane keeps
-  its original wait time**, recovered from `state.json`, so opening the office
-  late does not hand a stuck agent another 90 seconds of silence.
+- **Reopening the office pane does not reset the clock.** An agent already
+  blocked at startup keeps the wait time recorded in `state.json`, so a restart
+  does not hand a stuck agent another 90 seconds of silence. After a long
+  outage (5 minutes without the office running) the countdown does start fresh
+  — by then the agent may have unblocked and blocked again unobserved.
 - **`s` mutes escalation** for the session; the desks still show raised hands.
 - If herdr rate-limits a toast, Agent Office backs off 30 seconds and retries.
 
@@ -113,8 +115,11 @@ speech bubble turns from `!` to a red `!!` on screen. Details worth knowing:
 The office pane writes `HERDR_PLUGIN_STATE_DIR/state.json` every 10 seconds and
 whenever the desks change. It is what lets `agent-office.jump-blocked` pick the
 genuinely longest-blocked agent and `agent-office.open` focus the office pane
-that is already running. Both actions still work without it — jump-blocked
-falls back to ordering by pane id — so deleting the file is harmless.
+that is already running.
+
+Both actions still work without it: they only trust the file while an office
+process is actively writing it, and otherwise fall back to ordering by pane id
+and to opening a new pane. Deleting the file is harmless.
 
 ## Keys (when the office pane is focused)
 

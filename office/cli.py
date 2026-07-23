@@ -98,7 +98,14 @@ def action_jump_blocked():
     except Exception as exc:                              # noqa: BLE001
         sys.stderr.write("pane.list failed: %s\n" % exc)
         return 1
-    target = pick_blocked(panes, statefile.blocked_epoch_map(_state()))
+    # design.md section 6: the recorded blocked_since is authoritative only
+    # *while the office is running*. A stopped file's timestamps predate an
+    # unknown stretch of time in which an agent may have unblocked and blocked
+    # again, which would confidently rank the wrong pane first; the pane_id
+    # tiebreak is the honest answer there.
+    data = _state()
+    recorded = statefile.blocked_epoch_map(data) if statefile.is_live(data) else {}
+    target = pick_blocked(panes, recorded)
     if not target:
         sys.stderr.write("no blocked agents.\n")
         return 0

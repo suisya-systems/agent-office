@@ -27,9 +27,16 @@ import time
 STATE_VERSION = 1
 STATE_BASENAME = "state.json"
 WRITE_INTERVAL_S = 10.0
-# Beyond this, `office_pane_id` is treated as stale: the office pane presumably
-# died without a clean shutdown, so its recorded pane_id may have been recycled.
+# Beyond this the office is not considered to be running: it stopped writing
+# (crash, kill, clean exit), so its recorded pane_id may have been recycled and
+# its blocked_since values are no longer being kept up to date.
 FRESH_S = 60.0
+# How long an office outage may last while blocked_since is still inherited.
+# The file only proves a desk was blocked as of `updated_at`; anything after
+# that is unobserved, so across a long gap an agent may well have unblocked and
+# reblocked. Inheriting then would fire an "overdue" toast at a desk that just
+# blocked. A short gap (reopening the pane) is the case section 7 cares about.
+SEED_MAX_GAP_S = 300.0
 
 
 def state_path(env=None):
@@ -55,17 +62,44 @@ def read(path):
     return data
 
 
-def blocked_since_map(data, wall_now=None, mono_now=None):
+def age_s(data, wall_now=None):
+    """Seconds since the file was last written, or None if unknowable."""
+    if not data:
+        return None
+    updated_at = data.get("updated_at")
+    if not isinstance(updated_at, (int, float)):
+        return None
+    wall_now = time.time() if wall_now is None else wall_now
+    return wall_now - updated_at
+
+
+def is_live(data, wall_now=None):
+    """True while an office process is actively writing this file."""
+    if not data or not data.get("running"):
+        return False
+    age = age_s(data, wall_now)
+    return age is not None and age <= FRESH_S
+
+
+def blocked_since_map(data, wall_now=None, mono_now=None,
+                      max_age_s=SEED_MAX_GAP_S):
     """Recorded blocked_since values, converted back to the monotonic clock.
 
     Only desks that were blocked when the file was written have one. The result
     is clamped to the present so a clock jump can never place a desk's
     blocked_since in the future (which would read as a negative elapsed time).
+
+    A file older than `max_age_s` yields nothing: see SEED_MAX_GAP_S for why a
+    long unobserved gap makes these timestamps unsafe to inherit.
     """
     if not data:
         return {}
     wall_now = time.time() if wall_now is None else wall_now
     mono_now = time.monotonic() if mono_now is None else mono_now
+    if max_age_s is not None:
+        age = age_s(data, wall_now)
+        if age is None or age > max_age_s:
+            return {}
     out = {}
     for desk in data.get("desks") or []:
         if not isinstance(desk, dict):
@@ -100,13 +134,7 @@ def live_office_pane_id(data, wall_now=None):
     writing (crash, kill), so its pane_id is no longer trustworthy - herdr may
     have handed that id to something else since.
     """
-    if not data or not data.get("running"):
-        return None
-    updated_at = data.get("updated_at")
-    if not isinstance(updated_at, (int, float)):
-        return None
-    wall_now = time.time() if wall_now is None else wall_now
-    if wall_now - updated_at > FRESH_S:
+    if not is_live(data, wall_now):
         return None
     return data.get("office_pane_id") or None
 

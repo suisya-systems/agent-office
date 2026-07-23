@@ -101,7 +101,10 @@ class Office:
         self.writer = statefile.StateWriter(state_file,
                                             office_pane_id=self_pane_id)
         # Read before the writer can overwrite it: section 7's restart
-        # inheritance needs the *previous* run's blocked_since values.
+        # inheritance needs the *previous* run's blocked_since values. Only a
+        # recently-written file qualifies (statefile.SEED_MAX_GAP_S) - across a
+        # long outage a desk may have unblocked and reblocked unobserved, and
+        # inheriting then would escalate a desk that only just blocked.
         self._seed_blocked = statefile.blocked_since_map(
             statefile.read(state_file))
         self.frame = 0

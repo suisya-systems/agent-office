@@ -149,8 +149,8 @@ class ReadTest(unittest.TestCase):
 
 
 class BlockedSinceMapTest(unittest.TestCase):
-    def data(self, blocked_since):
-        return {"version": statefile.STATE_VERSION, "updated_at": 500.0,
+    def data(self, blocked_since, updated_at=990.0):
+        return {"version": statefile.STATE_VERSION, "updated_at": updated_at,
                 "desks": [{"pane_id": "p1", "blocked_since": blocked_since}]}
 
     def test_epoch_converts_back_to_monotonic(self):
@@ -165,7 +165,8 @@ class BlockedSinceMapTest(unittest.TestCase):
         self.assertEqual(out["p1"], 5000.0)
 
     def test_desks_without_blocked_since_are_skipped(self):
-        self.assertEqual(statefile.blocked_since_map(self.data(None)), {})
+        self.assertEqual(statefile.blocked_since_map(
+            self.data(None), wall_now=1000.0, mono_now=5000.0), {})
 
     def test_empty_and_malformed_inputs(self):
         self.assertEqual(statefile.blocked_since_map(None), {})
@@ -175,6 +176,55 @@ class BlockedSinceMapTest(unittest.TestCase):
     def test_epoch_map_keeps_raw_values(self):
         self.assertEqual(statefile.blocked_epoch_map(self.data(940.0)),
                          {"p1": 940.0})
+
+    # -- staleness gate ----------------------------------------------
+
+    def test_stale_file_is_not_inherited(self):
+        # the office was down long enough that the desk may have unblocked and
+        # reblocked unobserved: start the countdown fresh instead
+        stale = self.data(940.0, updated_at=1000.0 - statefile.SEED_MAX_GAP_S - 1)
+        self.assertEqual(statefile.blocked_since_map(stale, wall_now=1000.0,
+                                                     mono_now=5000.0), {})
+
+    def test_file_within_the_gap_is_inherited(self):
+        fresh = self.data(940.0, updated_at=1000.0 - statefile.SEED_MAX_GAP_S + 1)
+        self.assertIn("p1", statefile.blocked_since_map(fresh, wall_now=1000.0,
+                                                        mono_now=5000.0))
+
+    def test_file_without_updated_at_is_not_inherited(self):
+        data = self.data(940.0)
+        del data["updated_at"]
+        self.assertEqual(statefile.blocked_since_map(data, wall_now=1000.0,
+                                                     mono_now=5000.0), {})
+
+    def test_gate_can_be_disabled(self):
+        stale = self.data(940.0, updated_at=0.0)
+        self.assertIn("p1", statefile.blocked_since_map(
+            stale, wall_now=1000.0, mono_now=5000.0, max_age_s=None))
+
+
+class IsLiveTest(unittest.TestCase):
+    def data(self, **kw):
+        base = {"version": statefile.STATE_VERSION, "updated_at": 1000.0,
+                "running": True}
+        base.update(kw)
+        return base
+
+    def test_running_and_fresh(self):
+        self.assertTrue(statefile.is_live(self.data(), wall_now=1010.0))
+
+    def test_running_but_stale(self):
+        self.assertFalse(statefile.is_live(
+            self.data(), wall_now=1000.0 + statefile.FRESH_S + 1))
+
+    def test_stopped(self):
+        self.assertFalse(statefile.is_live(self.data(running=False),
+                                           wall_now=1010.0))
+
+    def test_missing(self):
+        self.assertFalse(statefile.is_live(None))
+        self.assertIsNone(statefile.age_s(None))
+        self.assertIsNone(statefile.age_s({"updated_at": "soon"}))
 
 
 class LiveOfficePaneTest(unittest.TestCase):
@@ -225,6 +275,20 @@ class PickBlockedTest(unittest.TestCase):
 
     def test_stale_entries_for_unblocked_panes_are_ignored(self):
         self.assertEqual(pick_blocked(self.PANES, {"pC": 1.0}), "pA")
+
+    def test_only_a_live_office_supplies_the_ranking(self):
+        # design.md section 6: recorded timestamps are authoritative only while
+        # the office is running; a stopped file must not outrank the tiebreak
+        stopped = {"version": statefile.STATE_VERSION, "updated_at": 1000.0,
+                   "running": False,
+                   "desks": [{"pane_id": "pB", "blocked_since": 10.0}]}
+        recorded = (statefile.blocked_epoch_map(stopped)
+                    if statefile.is_live(stopped, wall_now=1010.0) else {})
+        self.assertEqual(pick_blocked(self.PANES, recorded), "pA")
+        live = dict(stopped, running=True)
+        recorded = (statefile.blocked_epoch_map(live)
+                    if statefile.is_live(live, wall_now=1010.0) else {})
+        self.assertEqual(pick_blocked(self.PANES, recorded), "pB")
 
 
 class SeedBlockedSinceTest(unittest.TestCase):
@@ -279,6 +343,24 @@ class RoundTripTest(unittest.TestCase):
         second.seed_blocked_since(seed)
         # 30s of the countdown already elapsed before this process started
         self.assertEqual(second.desks["p1"].blocked_since, 8970.0)
+
+    def test_a_long_outage_starts_the_countdown_fresh(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = os.path.join(directory.name, statefile.STATE_BASENAME)
+        mono, wall = Clock(1000.0), Clock(1_700_000_000.0)
+
+        first = OfficeState(now=mono)
+        first.ingest_pane(pane("p1", status="blocked"))
+        statefile.StateWriter(path, now=mono, wall=wall).maybe_write(first)
+
+        wall.advance(statefile.SEED_MAX_GAP_S + 60)   # office down for ages
+        second = OfficeState(now=Clock(9000.0))
+        second.ingest_pane(pane("p1", status="blocked"))
+        second.seed_blocked_since(statefile.blocked_since_map(
+            statefile.read(path), wall_now=wall.t, mono_now=9000.0))
+        # the desk may have unblocked and reblocked while nobody was watching
+        self.assertEqual(second.desks["p1"].blocked_since, 9000.0)
 
 
 if __name__ == "__main__":
