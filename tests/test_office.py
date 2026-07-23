@@ -98,6 +98,81 @@ class ConfigWiringTest(unittest.TestCase):
         self.assertEqual(office.escalator.sound, "none")
         self.assertTrue(office.escalator.notify_done)
 
+    def test_theme_reaches_the_renderer(self):
+        office = make_office(Config(theme="midnight"))
+        self.assertEqual(office.renderer.theme.name, "midnight")
+
+
+class FakeSender:
+    def __init__(self):
+        self.calls = []
+
+    def set_boxes(self, boxes, art):
+        self.calls.append(("set", tuple(boxes)))
+
+    def clear(self):
+        self.calls.append(("clear",))
+
+
+class GraphicsWiringTest(unittest.TestCase):
+    """Tier 2's overlay bookkeeping (design.md section 5, risk 6)."""
+
+    def office(self, tier=2, pane="self-pane"):
+        return Office("/nonexistent.sock", pane, tier=tier, truecolor=True,
+                      config=Config())
+
+    def test_only_tier2_owns_a_graphics_sender(self):
+        self.assertIsNone(self.office(tier=0).graphics)
+        self.assertIsNone(self.office(tier=1).graphics)
+        self.assertIsNotNone(self.office(tier=2).graphics)
+
+    def test_without_a_pane_id_there_is_nothing_to_draw_on(self):
+        self.assertIsNone(self.office(tier=2, pane=None).graphics)
+
+    def test_an_unchanged_frame_sends_nothing(self):
+        # The overlay is static and a PNG encode is not free: re-sending it on
+        # every animation tick is exactly what the box comparison prevents.
+        office = self.office()
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office._sync_overlay()
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(fake.calls[0][0], "set")
+
+    def test_a_changed_frame_sends_again(self):
+        office = self.office()
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office.renderer.sprite_boxes = [(1, 1, "blocked", "claude", False)]
+        office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["set", "set"])
+
+    def test_losing_the_sprites_takes_the_overlay_down(self):
+        # The help overlay and the compact view have no sprites; an image left
+        # up would sit on top of them.
+        office = self.office()
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office.renderer.sprite_boxes = []
+        office._sync_overlay()
+        office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["set", "clear"])
+
+    def test_tier1_never_touches_the_overlay(self):
+        office = self.office(tier=1)
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()                     # must not raise
+
+    def test_a_graphics_failure_is_visible_on_the_status_line(self):
+        office = self.office()
+        office._handle(("graphics", (False, "feature_disabled")))
+        self.assertIn("feature_disabled", office._status())
+        office._handle(("graphics", (True, "")))
+        self.assertEqual(office._status(), "")
+
     def test_mute_key_reaches_the_escalator(self):
         office = make_office()
         office._handle(("key", "s"))

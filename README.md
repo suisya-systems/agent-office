@@ -61,9 +61,9 @@ reopen the office pane to apply changes.
 ```toml
 [office]
 filter = "agents"            # "agents" (only panes with a detected agent) | "all"
-renderer = "auto"            # "auto" | "unicode" (tier 1) | "ascii" (tier 0)
+renderer = "auto"            # "auto" | "unicode" (tier 1) | "ascii" (tier 0) | "kitty" (tier 2)
 fps = 2                      # animation ticks per second, 1..10
-theme = "default"            # sprite palette (only "default" so far)
+theme = "default"            # "default" | "midnight" | "daylight"
 name_template = "{name}"     # "{name}" | "{name:last-segment}"
 
 [escalation]
@@ -90,6 +90,27 @@ status line.
 **`name_template`** shortens long names on desk nameplates and room labels.
 `"{name:last-segment}"` keeps only the part after the last `/`, which turns a
 label like `claude-org/8f3a…/g7/project:agent-office/a2` into `a2`.
+
+**`theme`** repaints the office. `default` is the original look; `midnight` is
+a darker, neon-lit room; `daylight` is a bright one. Themes colour the sprites
+*and* the text (header, nameplates, status words), so they work on every
+renderer tier, including the ASCII one.
+
+**`renderer = "kitty"`** turns on tier 2, which draws the same office and then
+lays a real PNG over the characters for a crisper look. It is opt-in because it
+needs both of these, and falls back to `unicode` with a note on the status line
+whenever either is missing:
+
+- `[experimental] kitty_graphics = true` in your **herdr** config (off by
+  default), and
+- an outer terminal that speaks the kitty graphics protocol *and* reports its
+  cell size — herdr refuses with `cell_size_unavailable` when it cannot get
+  one (seen under WSL).
+
+The sprites are static in tier 2: herdr 0.7.4 has no streaming graphics call,
+so animating would mean re-sending an image every tick. The animated tier 1 art
+is still drawn underneath, so a terminal that quietly ignores the image leaves
+you with a normal, working office rather than a blank one.
 
 ### Escalation behaviour
 
@@ -153,6 +174,15 @@ pane focused in herdr), **SELECTED** (accent-colored desk frame under the office
 cursor), and **ESCALATED** (a blocked desk past its threshold — the bubble turns
 from `!` to a red `!!`, in sync with the toast). See
 [`docs/character-states.md`](docs/character-states.md) for the full spec.
+
+### Who sits at the desk
+
+The character is picked from the `agent` herdr already reports, so each kind of
+agent is recognisable at a glance — `claude`, `codex`, `gemini`, `cursor` and
+`droid` each get their own headgear, accent colour and ASCII head. Anything
+else, including an agent herdr learns to detect after this release, sits down as
+the default character rather than as nothing. The state always wins over the
+character: a raised hand and its speech bubble are never covered by a hat.
 
 ## Actions and keybindings
 

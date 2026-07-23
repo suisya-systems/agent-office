@@ -119,9 +119,20 @@ Desk
 | tier 2（opt-in） | `pane.graphics.set`（PNG）で自ペインに真のピクセルアートを重畳 | 設定 `renderer = "kitty"` かつ `pane.graphics.info` が `feature_disabled` を返さない場合のみ | 高精細スプライト |
 
 判定ロジック（起動時に 1 回 + 設定で強制上書き可）:
-1. 設定 `renderer` が明示されていればそれに従う（`kitty` 指定でも `feature_disabled` なら tier 1 へ**警告付き**フォールバック）。
-2. 自動判定: `pane.graphics.info` 成功 → tier 2 は**選ばない**（既定は tier 1。kitty は実験的機能のため opt-in のみ）。`LANG`/`LC_*` が UTF-8 かつ `TERM != dumb` → tier 1。それ以外 → tier 0。色数は `COLORTERM=truecolor` → 24bit、なければ 256 色パレットに量子化。
+1. 設定 `renderer` が明示されていればそれに従う（`kitty` 指定でも `pane.graphics.info` が**成功しなければ** tier 1 へ**警告付き**フォールバック）。
+2. 自動判定: tier 2 は**選ばない**（既定は tier 1。kitty は実験的機能のため opt-in のみ）。`LANG`/`LC_*` が UTF-8 かつ `TERM != dumb` → tier 1。それ以外 → tier 0。色数は `COLORTERM=truecolor` → 24bit、なければ 256 色パレットに量子化。
 3. tier 2 有効時も、レイアウト計算・ネームプレート・凡例はテキストセルで描き、スプライト部分だけ graphics に置く（`pane.graphics.stream` は 0.7.4 に無いため全面画像アニメは行わない。将来 stream が来たら差し替え可能なよう Renderer を interface 化）。
+
+**tier 2 の判定条件（Stage 2 実測により精緻化）**: 当初は「`pane.graphics.info` が `feature_disabled` を返さない場合」としていたが、実測で 2 種類の拒否コードを確認したため「**`info` が成功した場合のみ**」に改めた。
+
+| コード | 状況 | 判断 |
+|---|---|---|
+| `feature_disabled` | `[experimental].kitty_graphics = false`（既定） | 恒久的に不可 → tier 1 |
+| `cell_size_unavailable` | kitty_graphics 有効だが herdr が外側端末のセルピクセルサイズを取得できない（WSL 実測） | 画像を配置できない → tier 1 |
+
+重要な実測事実: `cell_size_unavailable` の状態でも **`pane.graphics.set` は `{"type":"ok"}` を返す**。つまり `set` の成功は「画面に出た」ことの証拠にならず、可否判定に使えるのは `info` だけである。
+
+**tier 2 は加算的（additive）に実装する**: tier 1 のフレームを完全に描いた上に画像を重ねる。外側端末が kitty graphics を解さない場合（herdr からは検知不能）でも、ユーザーには動作する tier 1 オフィスが残り、空白にはならない。
 
 共通事項:
 - フレームは全画面再構成 + カーソルホーム書き換え（差分描画は Stage 2 で必要なら導入）。alternate screen + カーソル非表示。SIGWINCH（Windows ではリサイズポーリング）で再レイアウト。

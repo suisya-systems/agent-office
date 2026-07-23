@@ -20,13 +20,14 @@ below opens a socket, they hand the call to the Commander and pick the outcome
 up later as an ("action", ...) item.
 """
 
+import dataclasses
 import os
 import queue
 import signal
 import sys
 import time
 
-from . import statefile
+from . import graphics, statefile
 from .commander import FOCUS, PANE_LIST, Commander
 from .config import Config
 from .config import load as load_config
@@ -34,7 +35,7 @@ from .escalator import Escalator
 from .input import InputReader
 from .notifier import Notifier
 from .reconciler import Reconciler
-from .renderer import Renderer, detect_caps, format_name
+from .renderer import TIER_KITTY, TIER_UNICODE, Renderer, detect_caps, format_name
 from .screen import Screen
 from .state import OfficeState
 from .subscriber import Subscriber
@@ -57,7 +58,13 @@ class Office:
                                  workspace_globs=self.config.workspaces,
                                  exclude_agents=self.config.exclude_agents)
         self.renderer = Renderer(tier=tier, truecolor=truecolor,
-                                 name_template=self.config.name_template)
+                                 name_template=self.config.name_template,
+                                 theme=self.config.theme)
+        # tier 2 only, and only once run() has confirmed the pane can take
+        # graphics at all - see graphics.probe and design.md section 5.
+        self.graphics = (graphics.GraphicsSender(sock_path, self.q,
+                                                 self_pane_id)
+                         if tier == TIER_KITTY and self_pane_id else None)
         self.subscriber = Subscriber(sock_path, self.q, self_pane_id)
         self.reconciler = Reconciler(sock_path, self.q)
         self.input = InputReader(self.q)
@@ -93,6 +100,12 @@ class Office:
         self.config_warning = "; ".join(self.config.warnings)
         self.status_line = ""
         self.toast_hint = ""
+        self.graphics_note = ""
+        # Sprite boxes last handed to the graphics thread. They are plain
+        # scalars, so an unchanged frame is recognised without composing
+        # anything - which is what keeps the static overlay (design.md risk 6)
+        # from re-encoding a PNG on every animation tick.
+        self._overlay_boxes = None
         # The "...ing" half of a status_line message that an in-flight action
         # put there, so its result can take it back down without wiping a
         # newer, unrelated notice that arrived in between.
@@ -116,6 +129,8 @@ class Office:
         self.input.start()
         self.notifier.start()
         self.commander.start()
+        if self.graphics:
+            self.graphics.start()
         self.subscriber.start()
         self.reconciler.start()
         last_render = 0.0
@@ -156,6 +171,13 @@ class Office:
             self.subscriber.stop()
             self.notifier.stop()
             self.commander.stop()
+            if self.graphics:
+                # Stop first, then clear synchronously: an overlay left behind
+                # outlives the frame it belonged to, and the pane is about to
+                # stop redrawing underneath it.
+                self.graphics.stop()
+                graphics.clear_now(self.graphics.sock_path,
+                                   self.graphics.pane_id)
             self.input.stop()
             # Feeder threads are stopped, so the state is settled: record it
             # rather than whatever the last periodic write happened to hold.
@@ -179,10 +201,30 @@ class Office:
             self.state, cols, rows, self.frame,
             muted=self.muted, show_help=self.show_help,
             escalated=self.escalator.escalated_ids(), status=self._status()))
+        self._sync_overlay()
+
+    def _sync_overlay(self):
+        """Keep the tier 2 image in step with the frame just written.
+
+        The renderer leaves the sprite rectangles of the frame it produced on
+        `sprite_boxes`; an unchanged list means an unchanged image, so nothing
+        is composed or sent. The help and compact views have no sprites, and
+        clear the overlay so it cannot sit on top of them.
+        """
+        if self.graphics is None:
+            return
+        boxes = tuple(self.renderer.sprite_boxes)
+        if boxes == self._overlay_boxes:
+            return
+        self._overlay_boxes = boxes
+        if boxes:
+            self.graphics.set_boxes(boxes, self.renderer.art)
+        else:
+            self.graphics.clear()
 
     def _status(self):
         parts = [p for p in (self.config_warning, self.toast_hint,
-                             self.status_line) if p]
+                             self.graphics_note, self.status_line) if p]
         return "  |  ".join(parts)
 
     # -- event dispatch -------------------------------------------------
@@ -215,6 +257,8 @@ class Office:
             self._handle_notify_result(*payload)
         elif kind == "action":
             self._handle_action_result(*payload)
+        elif kind == "graphics":
+            self._handle_graphics_result(*payload)
         elif kind == "log":
             self.status_line = payload
 
@@ -246,6 +290,16 @@ class Office:
             self.toast_hint = ""
         elif reason != "no_foreground_client":
             self.status_line = "toast %s; retrying" % reason
+
+    def _handle_graphics_result(self, ok, message):
+        """Outcome of a pane.graphics.set/clear (tier 2 only).
+
+        The sender only reports a *change* of outcome, so this can say its
+        piece plainly. A failure is worth a line because the tier 1 art is
+        still underneath: the office looks fine and the user would otherwise
+        have no way to tell the overlay never arrived.
+        """
+        self.graphics_note = "" if ok else "graphics: %s" % message
 
     def _handle_key(self, name):
         cols, _ = self.screen.size()
@@ -356,5 +410,16 @@ def run():
     self_pane = os.environ.get("HERDR_PANE_ID")
     cfg = load_config()
     tier, truecolor = detect_caps(cfg.force_renderer)
+    if tier == TIER_KITTY:
+        # design.md section 5: an explicit renderer="kitty" still falls back to
+        # tier 1 *with a warning* when the server says no - which it does by
+        # default, since [experimental] kitty_graphics ships off. Asking once
+        # at startup keeps the answer out of the render loop.
+        ok, reason = graphics.probe(sock, self_pane)
+        if not ok:
+            tier = TIER_UNICODE
+            cfg = dataclasses.replace(
+                cfg, warnings=cfg.warnings
+                + ("renderer=kitty unavailable (%s); using unicode" % reason,))
     Office(sock, self_pane, tier, truecolor, config=cfg).run()
     return 0
