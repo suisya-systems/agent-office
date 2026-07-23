@@ -52,9 +52,19 @@ class Overlay:
 
 
 def _fit_scale(grid_cols, grid_rows, scale=SCALE):
-    while scale > 1 and grid_cols * scale * grid_rows * 2 * scale > MAX_IMAGE_PX:
+    """Largest scale down to 1 whose image fits MAX_IMAGE_PX, or 0 if none does.
+
+    Returning 0 rather than clamping at 1 keeps the cap honest: a pane big
+    enough that even one image pixel per sprite pixel busts the budget gets no
+    overlay at all instead of a multi-megabyte encode on every redraw. It takes
+    something like 1000x750 cells to get there, so in practice this only ever
+    hands back SCALE - but "in practice" is not a bound.
+    """
+    while scale >= 1:
+        if grid_cols * scale * grid_rows * 2 * scale <= MAX_IMAGE_PX:
+            return scale
         scale -= 1
-    return scale
+    return 0
 
 
 def build_overlay(boxes, art, scale=SCALE):
@@ -83,6 +93,8 @@ def build_overlay(boxes, art, scale=SCALE):
         return None
 
     scale = _fit_scale(grid_cols, grid_rows, scale)
+    if not scale:
+        return None                 # too big to be worth drawing; tier 1 shows
     canvas = png.Canvas(grid_cols * scale, grid_rows * 2 * scale)
     for row, col, pixels in rendered:
         canvas.blit((col - min_col) * scale, (row - min_row) * 2 * scale,

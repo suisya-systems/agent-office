@@ -223,9 +223,28 @@ class OverlayTest(unittest.TestCase):
 
     def test_scale_drops_rather_than_encoding_a_huge_image(self):
         self.assertEqual(graphics._fit_scale(10, 10), graphics.SCALE)
-        big = graphics._fit_scale(2000, 2000)
+        big = graphics._fit_scale(500, 500)
         self.assertLess(big, graphics.SCALE)
         self.assertGreaterEqual(big, 1)
+
+    def test_every_scale_that_is_offered_actually_fits_the_cap(self):
+        for cols in (1, 17, 80, 300, 500, 900, 2000):
+            for rows in (1, 6, 30, 200, 800, 2000):
+                scale = graphics._fit_scale(cols, rows)
+                if scale:
+                    self.assertLessEqual(
+                        cols * scale * rows * 2 * scale, graphics.MAX_IMAGE_PX,
+                        "%dx%d at scale %d" % (cols, rows, scale))
+
+    def test_a_pane_too_big_even_at_scale_1_gets_no_overlay(self):
+        # Clamping at scale 1 would have let the cap be exceeded anyway, which
+        # is the one thing the cap exists to prevent.
+        self.assertEqual(graphics._fit_scale(2000, 2000), 0)
+        # 4015 x 200 cells: 1.6M pixels at scale 1, over the 1.5M cap.
+        r = self.renderer()
+        self.assertIsNone(graphics.build_overlay(
+            [(1, 1, "working", "claude", False),
+             (195, 4000, "working", "claude", False)], r.art))
 
 
 class FakeProtocol:
