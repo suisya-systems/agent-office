@@ -48,6 +48,24 @@ differ — herdr answers `platform_unsupported` if you ask for the other one:
 herdr plugin pane open --plugin agent-office --entrypoint office-windows --placement tab
 ```
 
+### Recommended: bind a key
+
+`agent-office.open` focuses the office pane if one is already running and opens
+one otherwise, so a single key gets you to the office from anywhere. Add this
+to your herdr config:
+
+```toml
+[[keys.command]]
+key = "prefix+alt+o"
+type = "plugin_action"
+command = "agent-office.open"
+description = "open Agent Office"
+```
+
+On Windows use `agent-office.open-windows`, per the id note above. A second
+global action jumps straight to the longest-blocked agent; see
+[Actions and keybindings](#actions-and-keybindings).
+
 ### Required: enable toast delivery
 
 Escalation toasts (a blocked agent that stays stuck) use herdr's
@@ -202,15 +220,19 @@ character: a raised hand and its speech bubble are never covered by a hat.
 
 Two actions are exposed globally and work even when the office pane is not open:
 
-- `agent-office.open` — focus the running office pane, or open one.
+- `agent-office.open` — focus the running office pane, or open one. A
+  suggested binding is in [Quick Start](#recommended-bind-a-key).
 - `agent-office.jump-blocked` — focus the longest-blocked agent's pane.
 
-Bind them to a herdr key so you can jump to a stuck agent from anywhere:
+Bind `jump-blocked` to a herdr key so you can reach a stuck agent from
+anywhere:
 
 ```toml
 [[keys.command]]
-key = "prefix+j"
-run = "herdr plugin action invoke agent-office.jump-blocked"
+key = "prefix+alt+j"
+type = "plugin_action"
+command = "agent-office.jump-blocked"
+description = "jump to longest-blocked agent"
 ```
 
 herdr's built-in `open_notification_target` (`prefix+o`) also jumps to the pane
