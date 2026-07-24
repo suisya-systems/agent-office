@@ -324,18 +324,26 @@ class Office:
     def _handle_graphics_result(self, ok, message):
         """Outcome of a pane.graphics.set/clear (tier 2 only).
 
-        The sender only reports a *change* of outcome, so this can say its
-        piece plainly. A failure is worth a line because the tier 1 art is
-        still underneath: the office looks fine and the user would otherwise
-        have no way to tell the overlay never arrived.
+        A failure is worth a line because the tier 1 art is still underneath:
+        the office looks fine, and the user would otherwise have no way to
+        tell the overlay never arrived.
 
-        A failure also means the image is *not* up, whatever was submitted, so
-        the optimism in _sync_overlay is withdrawn here and the retry is
-        scheduled. Left claiming success, the office would sit with no overlay
-        until some unrelated change happened to move a desk.
+        **Both outcomes move the state, and that is the point.** The sender is
+        serial and reports every request it runs, so the last report always
+        describes the last submission - which makes "latest report wins" the
+        correct rule here. Writing only the failure edge looked sufficient
+        (_sync_overlay already sets `_overlay_ok` optimistically on submit) but
+        is not: submit A, submit B while A is still out, then A fails and B
+        succeeds. The failure arrives second-to-last and leaves the office
+        believing B is missing, so it re-sends an overlay that is already on
+        screen. Cheap - the next optimistic submit heals it, so it costs one
+        wasted encode rather than a standing loop - but simply wrong.
         """
         self.graphics_note = "" if ok else "graphics: %s" % message
-        if not ok:
+        if ok:
+            self._overlay_ok = True
+            self._overlay_retry_at = 0.0
+        else:
             self._overlay_ok = False
             self._overlay_retry_at = self.state.now() + GRAPHICS_RETRY_S
 
