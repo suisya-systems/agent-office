@@ -20,6 +20,7 @@ and a subscription that is reported as open but will never deliver an event.
 import errno
 import itertools
 import json
+import os
 import queue
 import threading
 import unittest
@@ -249,6 +250,7 @@ class ConnectBranchTest(unittest.TestCase):
         self.windows_calls = []
         protocol._connect_windows = lambda *a, **k: self.windows_calls.append(a)
 
+    @unittest.skipIf(os.name == "nt", "no AF_UNIX to connect to on Windows")
     def test_unix_never_reaches_the_pipe_path(self):
         """The busy retry must not see a unix socket's own EINVAL.
 

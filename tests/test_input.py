@@ -117,6 +117,7 @@ class WindowsBackendTest(unittest.TestCase):
         backend.close()
 
 
+@unittest.skipIf(os.name == "nt", "select() on Windows takes sockets only")
 class PosixBackendTest(unittest.TestCase):
     def setUp(self):
         self.read_fd, self.write_fd = os.pipe()

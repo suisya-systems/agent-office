@@ -11,7 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # windows-latest is not decoration: the named-pipe connection, the
+        # msvcrt input backend and the encoder-aware tier choice only exist
+        # for it, and its unix-only skips are the thing most likely to rot.
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +22,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # `python`, not `python3`: Windows has no python3.exe, which is the same
+      # reason the manifest declares a separate command per platform.
       - name: Run unit tests
-        run: python3 -m unittest discover -s tests
+        run: python -m unittest discover -s tests
       - name: Byte-compile sources
-        run: python3 -m compileall office tests
+        run: python -m compileall office tests
