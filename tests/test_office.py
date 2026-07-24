@@ -7,12 +7,14 @@ out and the Commander's socket faked, to pin down issue #12: a stuck herdr must
 not stop the frames.
 """
 
+import queue
 import signal
 import threading
 import time
 import unittest
 
 from office import commander as commander_mod
+from office import office as office_mod
 from office.config import Config
 from office.escalator import Notification
 from office.office import TOAST_HINT, Office
@@ -97,6 +99,278 @@ class ConfigWiringTest(unittest.TestCase):
         self.assertEqual(office.escalator.renotify_s, 0.0)
         self.assertEqual(office.escalator.sound, "none")
         self.assertTrue(office.escalator.notify_done)
+
+    def test_theme_reaches_the_renderer(self):
+        office = make_office(Config(theme="midnight"))
+        self.assertEqual(office.renderer.theme.name, "midnight")
+
+
+class FakeSender:
+    def __init__(self):
+        self.calls = []
+
+    def set_boxes(self, boxes, art):
+        self.calls.append(("set", tuple(boxes)))
+
+    def clear(self):
+        self.calls.append(("clear",))
+
+
+class GraphicsWiringTest(unittest.TestCase):
+    """Tier 2's overlay bookkeeping (design.md section 5, risk 6)."""
+
+    def office(self, tier=2, pane="self-pane"):
+        return Office("/nonexistent.sock", pane, tier=tier, truecolor=True,
+                      config=Config())
+
+    def test_only_tier2_owns_a_graphics_sender(self):
+        self.assertIsNone(self.office(tier=0).graphics)
+        self.assertIsNone(self.office(tier=1).graphics)
+        self.assertIsNotNone(self.office(tier=2).graphics)
+
+    def test_without_a_pane_id_there_is_nothing_to_draw_on(self):
+        self.assertIsNone(self.office(tier=2, pane=None).graphics)
+
+    def test_an_unchanged_frame_sends_nothing(self):
+        # The overlay is static and a PNG encode is not free: re-sending it on
+        # every animation tick is exactly what the box comparison prevents.
+        office = self.office()
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office._sync_overlay()
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(fake.calls[0][0], "set")
+
+    def test_a_changed_frame_sends_again(self):
+        office = self.office()
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office.renderer.sprite_boxes = [(1, 1, "blocked", "claude", False)]
+        office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["set", "set"])
+
+    def test_losing_the_sprites_takes_the_overlay_down(self):
+        # The help overlay and the compact view have no sprites; an image left
+        # up would sit on top of them.
+        office = self.office()
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office.renderer.sprite_boxes = []
+        office._sync_overlay()
+        office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["set", "clear"])
+
+    def test_tier1_never_touches_the_overlay(self):
+        office = self.office(tier=1)
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()                     # must not raise
+
+    def test_a_graphics_failure_is_visible_on_the_status_line(self):
+        office = self.office()
+        office._handle(("graphics", (False, "feature_disabled")))
+        self.assertIn("feature_disabled", office._status())
+        office._handle(("graphics", (True, "")))
+        self.assertEqual(office._status(), "")
+
+    def test_a_failed_send_is_retried_rather_than_believed(self):
+        """Regression: the cache recorded intent, not what is on screen.
+
+        After a failed set, _overlay_boxes still matched the frame, so the
+        office believed the image was up and never resent it - the overlay
+        stayed missing until some unrelated change moved a desk.
+        """
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office._handle(("graphics", (False, "busy")))
+        office._sync_overlay()                     # still inside the backoff
+        self.assertEqual(len(fake.calls), 1)
+        clock[0] += office_mod.GRAPHICS_RETRY_S + 0.1
+        office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["set", "set"])
+
+    def test_repeated_identical_failures_keep_being_retried(self):
+        """Regression: the two rate limiters cancelled out.
+
+        Driven through the *real* GraphicsSender rather than a stub, because
+        the bug lived in the interaction: the sender used to drop a repeat of
+        the same failure, so the loop never heard about the second one, went
+        on believing the overlay was up, and stopped retrying for good.
+        """
+        from office import graphics as graphics_mod
+
+        class AlwaysBusy:
+            ProtocolError = graphics_mod.protocol.ProtocolError
+
+            def __init__(self):
+                self.sets = 0
+
+            def pane_graphics_set(self, *a, **kw):
+                self.sets += 1
+                raise self.ProtocolError("busy", "server busy")
+
+            def pane_graphics_clear(self, *a, **kw):
+                pass
+
+        real = graphics_mod.protocol
+        self.addCleanup(setattr, graphics_mod, "protocol", real)
+        graphics_mod.protocol = proto = AlwaysBusy()
+
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        for _ in range(4):
+            office._sync_overlay()
+            pending = office.graphics._pending
+            if pending:
+                office.graphics._pending = None
+                office.graphics._run(pending)
+            while True:
+                try:
+                    office._handle(office.q.get_nowait())
+                except queue.Empty:
+                    break
+            clock[0] += office_mod.GRAPHICS_RETRY_S + 1
+        self.assertEqual(proto.sets, 4)
+        self.assertIn("busy", office._status())
+
+    def test_switching_to_a_sprite_free_view_clears_despite_the_backoff(self):
+        """Regression: the backoff held back the clear the help view needs.
+
+        A failed send starts the backoff. Pressing `?` right after replaces
+        the desks with help text, and the stale image - still up, if the
+        failure's best-effort clear was refused too - sat on top of it until
+        the window elapsed. The backoff gates retries, not new intent.
+        """
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office._handle(("graphics", (False, "busy")))
+        clock[0] += 0.05                           # well inside the backoff
+        office.renderer.sprite_boxes = []          # help / compact view
+        office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["set", "clear"])
+
+    def test_a_repeatedly_failing_clear_still_does_not_spin(self):
+        # The flip side of the test above: acting on new intent at once must
+        # not let a persistently refused clear run once per redraw.
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = []
+        for _ in range(50):
+            office._sync_overlay()
+            office._handle(("graphics", (False, "busy")))
+            clock[0] += 0.04                       # MIN_REDRAW_S: ~25 fps
+        self.assertLessEqual(len(fake.calls), 2)
+
+    def test_a_sprite_free_first_frame_clears_once(self):
+        """Hygiene, and deliberately not skipped as a no-op.
+
+        The office pane can be reopened over a herdr that still holds the
+        previous process's graphics layer, so the first frame says what it
+        wants even when what it wants is nothing. Once, though - the state
+        then matches and stays quiet.
+        """
+        office = self.office()
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = []
+        for _ in range(5):
+            office._sync_overlay()
+        self.assertEqual([c[0] for c in fake.calls], ["clear"])
+
+    def test_a_late_failure_does_not_bury_a_newer_success(self):
+        """Regression: only the failure edge of _overlay_ok was wired.
+
+        Submit A, submit B while A is still out, then A fails and B succeeds.
+        The failure arrives second-to-last, so the office was left believing
+        B was missing and re-sent an overlay that was already on screen.
+        """
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        office._sync_overlay()
+        office.renderer.sprite_boxes = [(1, 1, "blocked", "claude", False)]
+        office._sync_overlay()
+        office._handle(("graphics", (False, "busy")))     # A, sent first
+        office._handle(("graphics", (True, "")))          # B, sent second
+        self.assertTrue(office._overlay_ok)
+        fake.calls.clear()
+        for _ in range(6):
+            clock[0] += office_mod.GRAPHICS_RETRY_S + 1
+            office._sync_overlay()
+        self.assertEqual(fake.calls, [])
+
+    def test_the_overlay_state_machine_over_every_short_interleaving(self):
+        """Exhaustive check of the invariant, not just the cases we thought of.
+
+        Three findings in a row landed in this bookkeeping, so the rule is
+        asserted directly over every ordering of submits and reports up to
+        length 5: the sender is serial and reports each request it runs, so
+        after the queue is drained the office must agree with the last report
+        - and must never re-send an overlay whose own report said it landed.
+        """
+        import itertools
+
+        A = [(1, 1, "working", "claude", False)]
+        B = [(1, 1, "blocked", "claude", False)]
+        events = (("submit", A), ("submit", B), ("submit", []),
+                  ("report", True), ("report", False))
+        checked = 0
+        for length in range(1, 6):
+            for seq in itertools.product(events, repeat=length):
+                clock = [1000.0]
+                office = self.office()
+                office.state._now = lambda: clock[0]
+                office.graphics = fake = FakeSender()
+                last_report = None
+                for kind, value in seq:
+                    if kind == "submit":
+                        office.renderer.sprite_boxes = list(value)
+                        office._sync_overlay()
+                    else:
+                        office._handle(("graphics", (value, "busy")))
+                        last_report = value
+                if last_report is not True or office._overlay_boxes is None:
+                    continue        # nothing was ever submitted to land
+                # The last thing we heard was "it landed". Nothing may be
+                # re-sent while the frame keeps asking for the same thing.
+                office.renderer.sprite_boxes = list(office._overlay_boxes)
+                checked += 1
+                self.assertTrue(office._overlay_ok, seq)
+                fake.calls.clear()
+                for _ in range(3):
+                    clock[0] += office_mod.GRAPHICS_RETRY_S + 1
+                    office._sync_overlay()
+                self.assertEqual(fake.calls, [], seq)
+        self.assertGreater(checked, 100)           # the sweep really ran
+
+    def test_a_standing_refusal_does_not_send_on_every_redraw(self):
+        # herdr can turn experimental.kitty_graphics back off under a running
+        # office (server reload-config), so the failure path must be bounded.
+        clock = [1000.0]
+        office = self.office()
+        office.state._now = lambda: clock[0]
+        office.graphics = fake = FakeSender()
+        office.renderer.sprite_boxes = [(1, 1, "working", "claude", False)]
+        for _ in range(50):
+            office._sync_overlay()
+            office._handle(("graphics", (False, "feature_disabled")))
+            clock[0] += 0.04                       # MIN_REDRAW_S: ~25 fps
+        self.assertLessEqual(len(fake.calls), 2)
 
     def test_mute_key_reaches_the_escalator(self):
         office = make_office()

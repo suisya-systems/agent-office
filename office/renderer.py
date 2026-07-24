@@ -1,8 +1,25 @@
 """Renderer - turns an OfficeState snapshot into a full terminal frame.
 
-design.md section 5. Two tiers here (tier 2 kitty is out of scope):
+design.md section 5. Three tiers, all fed by the same OfficeState snapshot and
+all producing the same information:
+  tier 2 (opt-in):  tier 1's text frame plus a real pixel overlay pushed
+                    through pane.graphics.set (see office/graphics.py)
   tier 1 (default): Unicode half-block pixel art + truecolor / 256-color ANSI
   tier 0 (fallback): ASCII + box art, for TERM=dumb / non-UTF-8 / --ascii
+
+**Where the tier branch lives.** How one desk's sprite is drawn is the only
+thing that actually differs between tiers, so that - and nothing else - is
+behind the small `_DeskArt` strategies below (the interface section 5 said to
+introduce once there was a second implementation to justify it). Layout,
+scrolling, nameplates, the compact fallback and the help overlay are written
+once and are tier-agnostic.
+
+Tier 2 is deliberately *additive*: it draws the complete tier 1 frame and then
+covers the sprite rectangles with an image. If the overlay never lands - an
+outer terminal without kitty graphics support, which herdr cannot tell us about
+- the user is left looking at a working tier 1 office rather than a blank one.
+The overlay itself is built at animation phase 0 and is static, because 0.7.4
+has no pane.graphics.stream to animate it with (design.md risk 6).
 
 The whole frame is rebuilt every draw (cursor-home overwrite); differential
 drawing is deferred. Layout groups desks into islands (workspaces), wraps to
@@ -13,40 +30,50 @@ one-line-per-desk summary.
 
 import os
 
-from . import sprites
+from . import sprites, themes
 
 RESET = "\x1b[0m"
-ACCENT = "\x1b[38;2;80;220;220m"        # cyan, selection / header
-ALERT = "\x1b[38;2;255;85;85m"          # red, ESCALATED (character-states.md)
 DIM = "\x1b[2m"
 BOLD = "\x1b[1m"
 
-# status -> (sprite visual state, short label, color)
+# status -> (sprite visual state, short label, theme ui colour key)
 STATUS_VISUAL = {
-    "idle": ("idle", "idle", "\x1b[38;2;98;160;234m"),
-    "working": ("working", "working", "\x1b[38;2;80;200;120m"),
-    "blocked": ("blocked", "blocked", "\x1b[38;2;255;165;0m"),
-    "done": ("done", "done", "\x1b[38;2;189;147;249m"),
-    "unknown": ("unknown", "?", "\x1b[38;2;128;128;132m"),
+    "idle": ("idle", "idle", "idle"),
+    "working": ("working", "working", "working"),
+    "blocked": ("blocked", "blocked", "blocked"),
+    "done": ("done", "done", "done"),
+    "unknown": ("unknown", "?", "unknown"),
 }
 
 MIN_COLS, MIN_ROWS = 80, 24
 
+TIER_ASCII, TIER_UNICODE, TIER_KITTY = 0, 1, 2
+
 
 def detect_caps(force_renderer=None, env=None):
-    """Return (tier, truecolor). tier 0 = ASCII, tier 1 = half-block."""
+    """Return (tier, truecolor). 0 = ASCII, 1 = half-block, 2 = kitty.
+
+    Tier 2 is only ever reached by asking for it (`renderer = "kitty"`): it is
+    an experimental herdr feature behind a config flag *and* needs a capable
+    outer terminal, so auto-detection never selects it (design.md section 5).
+    Whether it then actually works is a question for the server, not the
+    environment - office.run() probes pane.graphics.info and drops back to
+    tier 1 with a warning if the answer is no.
+    """
     env = env if env is not None else os.environ
     truecolor = env.get("COLORTERM", "").lower() in ("truecolor", "24bit")
     if force_renderer == "ascii":
-        return 0, truecolor
+        return TIER_ASCII, truecolor
     if force_renderer == "unicode":
-        return 1, truecolor
+        return TIER_UNICODE, truecolor
+    if force_renderer == "kitty":
+        return TIER_KITTY, truecolor
     term = env.get("TERM", "")
     lang = (env.get("LC_ALL") or env.get("LC_CTYPE") or env.get("LANG") or "")
     utf8 = "utf-8" in lang.lower() or "utf8" in lang.lower()
     if term == "dumb" or not utf8:
-        return 0, truecolor
-    return 1, truecolor
+        return TIER_ASCII, truecolor
+    return TIER_UNICODE, truecolor
 
 
 def format_name(name, template="{name}"):
@@ -62,19 +89,122 @@ def _center(text, width):
     return " " * left + text + " " * (pad - left)
 
 
+# ------------------------------------------------------- desk art strategies
+
+class _AsciiArt:
+    """tier 0: stick figures, no colour of its own beyond the status word."""
+
+    desk_w = sprites.ASCII_W
+    art_rows = sprites.ASCII_ROWS
+    graphics = False
+
+    def __init__(self, theme, truecolor):
+        self.theme = theme
+        self.truecolor = truecolor
+
+    def lines(self, visual, phase, agent, focused):
+        return sprites.desk_tier0_lines(visual, phase, agent)
+
+    def selected_frame(self, desk_w):
+        bar = "+" + "-" * desk_w + "+"
+        return bar, bar, "|"
+
+
+class _HalfBlockArt:
+    """tier 1: two pixel rows per text row, painted with the theme palette."""
+
+    desk_w = sprites.DESK_W
+    art_rows = sprites.DESK_ROWS
+    graphics = False
+
+    def __init__(self, theme, truecolor):
+        self.theme = theme
+        self.truecolor = truecolor
+        self._focused_palette = dict(theme.palette)
+        # The focused desk gets a lit floor. Each theme names those two
+        # colours itself rather than the renderer brightening the floor by a
+        # fixed amount, which would blow out a light theme and barely show on
+        # a dark one.
+        self._focused_palette["floor_a"] = theme.palette["floor_focus_a"]
+        self._focused_palette["floor_b"] = theme.palette["floor_focus_b"]
+
+    def palette(self, focused):
+        return self._focused_palette if focused else self.theme.palette
+
+    def lines(self, visual, phase, agent, focused):
+        return sprites.desk_tier1_lines(visual, phase, self.truecolor,
+                                        self.palette(focused), agent)
+
+    def pixels(self, visual, phase, agent, focused):
+        return sprites.desk_pixel_rows(visual, phase, self.palette(focused),
+                                       agent)
+
+    def selected_frame(self, desk_w):
+        return ("┌" + "─" * desk_w + "┐",
+                "└" + "─" * desk_w + "┘",
+                "│")
+
+
+class _KittyArt(_HalfBlockArt):
+    """tier 2: identical text output, plus pixels for the graphics overlay."""
+
+    graphics = True
+
+
+_ART_BY_TIER = {
+    TIER_ASCII: _AsciiArt,
+    TIER_UNICODE: _HalfBlockArt,
+    TIER_KITTY: _KittyArt,
+}
+
+
+class _Look:
+    """What one desk looks like this frame, decided once and reused.
+
+    The text block and the graphics overlay have to agree about the visual
+    state - an escalated desk showing "!!" in text and a plain "!" in the
+    image would be worse than having no overlay at all - so the decision is
+    made here and both consume it.
+    """
+
+    __slots__ = ("visual", "phase", "label", "color", "escalated",
+                 "selected", "focused")
+
+    def __init__(self, visual, phase, label, color, escalated, selected,
+                 focused):
+        self.visual = visual
+        self.phase = phase
+        self.label = label
+        self.color = color
+        self.escalated = escalated
+        self.selected = selected
+        self.focused = focused
+
+
 class Renderer:
-    def __init__(self, tier=1, truecolor=True, name_template="{name}"):
+    def __init__(self, tier=TIER_UNICODE, truecolor=True,
+                 name_template="{name}", theme=themes.DEFAULT_NAME):
         self.tier = tier
         self.truecolor = truecolor
         self.name_template = name_template
-        if tier == 0:
-            self.desk_w = sprites.ASCII_W
-            self.art_rows = sprites.ASCII_ROWS
-        else:
-            self.desk_w = sprites.DESK_W
-            self.art_rows = sprites.DESK_ROWS
+        self.theme = theme if isinstance(theme, themes.Theme) else themes.get(theme)
+        self.art = _ART_BY_TIER.get(tier, _HalfBlockArt)(self.theme, truecolor)
+        self.desk_w = self.art.desk_w
+        self.art_rows = self.art.art_rows
         self.block_w = self.desk_w + 2          # +1 border each side
         self.block_h = self.art_rows + 4        # top + art + name + status + bottom
+        ui = self.theme.ui
+        self.accent = sprites.fg(ui["accent"], truecolor)
+        self.alert = sprites.fg(ui["alert"], truecolor)
+        self._status_color = {key: sprites.fg(ui[key], truecolor)
+                              for key in ("idle", "working", "blocked", "done",
+                                          "unknown")}
+        # Sprite rectangles of the most recent render, in absolute frame cells:
+        # (row, col, pixel_rows). Empty for every tier but 2, and for the
+        # compact and help views, which have no sprites to overlay. The
+        # graphics layer reads this straight after render(); it is output, not
+        # state the renderer itself consults.
+        self.sprite_boxes = []
 
     # -- public ---------------------------------------------------------
 
@@ -87,6 +217,7 @@ class Renderer:
         cols = max(20, cols)
         rows = max(6, rows)
         escalated = frozenset(escalated)
+        self.sprite_boxes = []
         # A status line (config warnings, toast delivery hint, last error)
         # takes the bottom row when there is something to say.
         inner = max(3, rows - 1) if status else rows
@@ -125,28 +256,77 @@ class Renderer:
         if muted:
             bits.append("muted")
         text = "  ".join(bits)
-        return ACCENT + BOLD + text[:cols] + RESET
+        return self.accent + BOLD + text[:cols] + RESET
 
     # -- full layout ----------------------------------------------------
+
+    def _look(self, desk, state, frame, escalated):
+        visual, label, color_key = STATUS_VISUAL.get(desk.status,
+                                                     STATUS_VISUAL["unknown"])
+        color = self._status_color[color_key]
+        is_escalated = desk.status == "blocked" and desk.pane_id in escalated
+        if is_escalated:
+            visual = "blocked_escalated"
+            color = self.alert
+        return _Look(visual=visual,
+                     phase=frame + (hash(desk.pane_id) & 1),  # desync the anim
+                     label=label,
+                     color=color,
+                     escalated=is_escalated,
+                     selected=desk.pane_id == state.selected_pane_id,
+                     focused=desk.pane_id == state.focused_pane_id)
 
     def _full(self, state, cols, rows, frame, muted, escalated=frozenset()):
         per_row = max(1, (cols + 1) // (self.block_w + 1))
         body = []
         anchors = {}                              # pane_id -> line index in body
+        boxes = []                                # (body_row, col, pixel_rows)
         for wid, label, desks in state.islands():
             room = format_name(label, self.name_template)
             body.append(DIM + ("[ %s ]" % room)[:cols] + RESET)
             for start in range(0, len(desks), per_row):
                 chunk = desks[start:start + per_row]
-                block_lines = [self._desk_block(d, state, frame, escalated)
-                               for d in chunk]
-                for d in chunk:
-                    anchors[d.pane_id] = len(body)
+                block_lines = []
+                for column, desk in enumerate(chunk):
+                    look = self._look(desk, state, frame, escalated)
+                    block_lines.append(self._desk_block(desk, look))
+                    anchors[desk.pane_id] = len(body)
+                    if self.art.graphics:
+                        # +1: the block's first line is its top border, the
+                        # art starts on the next one. +1 on the column for the
+                        # left border character. Pixels are not built here -
+                        # the box is a cheap scalar description, so the caller
+                        # can tell "nothing changed" without painting anything.
+                        boxes.append((len(body) + 1,
+                                      column * (self.block_w + 1) + 1,
+                                      look.visual, desk.agent, look.focused))
                 for line_idx in range(self.block_h):
                     body.append(" ".join(bl[line_idx] for bl in block_lines))
             body.append("")
-        return self._scroll(body, anchors, state.selected_pane_id,
-                            state, cols, rows, muted)
+        window, offset = self._scroll(body, anchors, state.selected_pane_id,
+                                      state, cols, rows, muted)
+        if self.art.graphics:
+            self._place_boxes(boxes, offset, len(window))
+        return window
+
+    def _place_boxes(self, boxes, offset, window_len):
+        """Move sprite rectangles into absolute frame cells, dropping clipped.
+
+        The header occupies row 0 and the body is scrolled by `offset`, so a
+        box sits at `1 + body_row - offset`. A box only partly on screen is
+        dropped rather than cropped: a half-drawn character reads as a glitch,
+        and the text art underneath is still there to show it properly.
+
+        The window's last usable line is `window_len - 1`, so a box is fully on
+        screen only while `row + art_rows <= window_len`. Being one out here
+        puts the bottom row of an image past the end of the frame - over the
+        status line, or off the pane entirely.
+        """
+        for body_row, col, visual, agent, focused in boxes:
+            row = 1 + body_row - offset
+            if row < 1 or row + self.art_rows > window_len:
+                continue
+            self.sprite_boxes.append((row, col, visual, agent, focused))
 
     def _scroll(self, body, anchors, selected, state, cols, rows, muted):
         avail = rows - 1                          # header takes 1 line
@@ -162,49 +342,34 @@ class Renderer:
             hint = "  (scroll: %d-%d of %d)" % (offset + 1,
                                                 min(offset + avail, len(body)),
                                                 len(body))
-            header = header + ACCENT + hint + RESET
-        return [header] + window
+            header = header + self.accent + hint + RESET
+        return [header] + window, offset
 
-    def _desk_block(self, desk, state, frame, escalated=frozenset()):
-        selected = desk.pane_id == state.selected_pane_id
-        focused = desk.pane_id == state.focused_pane_id
-        visual, label, color = STATUS_VISUAL.get(desk.status,
-                                                 STATUS_VISUAL["unknown"])
-        is_escalated = desk.status == "blocked" and desk.pane_id in escalated
-        if is_escalated:
-            visual = "blocked_escalated"
-            color = ALERT
-        phase = frame + (hash(desk.pane_id) & 1)  # desync animation phase
-        if self.tier == 0:
-            art = sprites.desk_tier0_lines(visual, phase)
+    def _desk_block(self, desk, look):
+        art = self.art.lines(look.visual, look.phase, desk.agent, look.focused)
+        if look.selected:
+            hbar, bbar, edge = self.art.selected_frame(self.desk_w)
+            if self.tier:
+                hbar = self.accent + hbar + RESET
+                bbar = self.accent + bbar + RESET
+                side = self.accent + edge + RESET
+            else:
+                side = edge
         else:
-            pal = sprites.PALETTE
-            if focused:
-                pal = dict(pal)
-                pal["floor_a"] = (70, 70, 92)
-                pal["floor_b"] = (62, 62, 82)
-            art = sprites.desk_tier1_lines(visual, phase, self.truecolor, pal)
-
-        side = ACCENT + "│" + RESET if selected and self.tier else (
-            "|" if selected else " ")
-        if selected:
-            hbar = ("+" + "-" * self.desk_w + "+") if self.tier == 0 else (
-                ACCENT + "┌" + "─" * self.desk_w + "┐" + RESET)
-            bbar = ("+" + "-" * self.desk_w + "+") if self.tier == 0 else (
-                ACCENT + "└" + "─" * self.desk_w + "┘" + RESET)
-        else:
-            hbar = " " * self.block_w
-            bbar = " " * self.block_w
+            hbar = bbar = " " * self.block_w
+            side = " "
 
         name = format_name(desk.display_name, self.name_template)
-        plate = (ACCENT if selected else BOLD) + _center(name, self.desk_w) + RESET
-        stat_txt = label
+        plate = (self.accent if look.selected else BOLD) + _center(
+            name, self.desk_w) + RESET
+        stat_txt = look.label
         word = desk.state_label_word
         if desk.status == "blocked":
-            mark = "!!" if is_escalated else "!"
+            mark = "!!" if look.escalated else "!"
             stat_txt = ("%s %s" % (mark, word)) if word else ("%s %s"
-                                                              % (mark, label))
-        stat = color + _center(stat_txt, self.desk_w) + RESET
+                                                              % (mark,
+                                                                 look.label))
+        stat = look.color + _center(stat_txt, self.desk_w) + RESET
 
         lines = [hbar]
         for row in art:
@@ -222,21 +387,24 @@ class Renderer:
         order = state.ordered_desks()
         for desk in order:
             anchors[desk.pane_id] = len(body)
-            visual, label, color = STATUS_VISUAL.get(
+            visual, label, color_key = STATUS_VISUAL.get(
                 desk.status, STATUS_VISUAL["unknown"])
+            color = self._status_color[color_key]
             if desk.status == "blocked" and desk.pane_id in escalated:
-                label, color = "blocked!!", ALERT
-            sel = ACCENT + ">" + RESET if desk.pane_id == state.selected_pane_id else " "
+                label, color = "blocked!!", self.alert
+            sel = (self.accent + ">" + RESET
+                   if desk.pane_id == state.selected_pane_id else " ")
             foc = "*" if desk.pane_id == state.focused_pane_id else " "
-            dot = color + "●" + RESET if self.tier else color + "*" + RESET
+            dot = color + ("●" if self.tier else "*") + RESET
             name = format_name(desk.display_name, self.name_template)
             room = format_name(state.room_label(desk.workspace_id),
                                self.name_template)
             text = "%s %s %s %-10s %s/%s" % (sel, dot, foc,
                                              label[:10], room[:14], name)
             body.append(text[:cols + 40])         # allow ANSI overhead
-        header = ACCENT + BOLD + ("AGENT OFFICE (compact)  %d desks  %d blocked"
-                                  % (len(order), len(state.blocked_desks())))[:cols] + RESET
+        header = self.accent + BOLD + (
+            "AGENT OFFICE (compact)  %d desks  %d blocked"
+            % (len(order), len(state.blocked_desks())))[:cols] + RESET
         avail = rows - 1
         offset = 0
         sel_idx = anchors.get(state.selected_pane_id)
@@ -257,7 +425,7 @@ class Renderer:
             ("?", "toggle this help"),
             ("q", "close the office pane"),
         ]
-        lines = [ACCENT + BOLD + "AGENT OFFICE - keys" + RESET, ""]
+        lines = [self.accent + BOLD + "AGENT OFFICE - keys" + RESET, ""]
         for key, desc in keys:
             lines.append("  " + BOLD + ("%-16s" % key) + RESET + desc)
         lines.append("")

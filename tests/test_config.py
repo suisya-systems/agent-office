@@ -171,10 +171,28 @@ class FromMappingTest(unittest.TestCase):
         self.assertEqual(from_mapping({"office": {"fps": 99}}).fps, 10)
         self.assertEqual(from_mapping({"office": {"fps": 0}}).fps, 1)
 
-    def test_kitty_falls_back_to_unicode_with_a_warning(self):
+    def test_kitty_is_accepted_without_a_warning(self):
+        """Availability is the server's answer, not the config file's.
+
+        The config layer used to downgrade kitty here because tier 2 did not
+        exist. It does now, and whether it works depends on herdr's
+        [experimental] kitty_graphics - so office.run() probes and warns.
+        """
         cfg = from_mapping({"office": {"renderer": "kitty"}})
-        self.assertEqual(cfg.renderer, "unicode")
-        self.assertTrue(any("kitty" in w for w in cfg.warnings))
+        self.assertEqual(cfg.renderer, "kitty")
+        self.assertEqual(cfg.force_renderer, "kitty")
+        self.assertEqual(cfg.warnings, ())
+
+    def test_every_theme_is_accepted(self):
+        for name in config_mod.THEMES:
+            cfg = from_mapping({"office": {"theme": name}})
+            self.assertEqual(cfg.theme, name)
+            self.assertEqual(cfg.warnings, ())
+
+    def test_unknown_theme_falls_back_with_a_warning(self):
+        cfg = from_mapping({"office": {"theme": "neon-tokyo"}})
+        self.assertEqual(cfg.theme, "default")
+        self.assertTrue(any("theme" in w for w in cfg.warnings))
 
     def test_unknown_keys_and_sections_are_reported(self):
         cfg = from_mapping({"office": {"colour": "red"}, "nope": {}})

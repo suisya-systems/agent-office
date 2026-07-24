@@ -119,9 +119,20 @@ Desk
 | tier 2（opt-in） | `pane.graphics.set`（PNG）で自ペインに真のピクセルアートを重畳 | 設定 `renderer = "kitty"` かつ `pane.graphics.info` が `feature_disabled` を返さない場合のみ | 高精細スプライト |
 
 判定ロジック（起動時に 1 回 + 設定で強制上書き可）:
-1. 設定 `renderer` が明示されていればそれに従う（`kitty` 指定でも `feature_disabled` なら tier 1 へ**警告付き**フォールバック）。
-2. 自動判定: `pane.graphics.info` 成功 → tier 2 は**選ばない**（既定は tier 1。kitty は実験的機能のため opt-in のみ）。`LANG`/`LC_*` が UTF-8 かつ `TERM != dumb` → tier 1。それ以外 → tier 0。色数は `COLORTERM=truecolor` → 24bit、なければ 256 色パレットに量子化。
+1. 設定 `renderer` が明示されていればそれに従う（`kitty` 指定でも `pane.graphics.info` が**成功しなければ** tier 1 へ**警告付き**フォールバック）。
+2. 自動判定: tier 2 は**選ばない**（既定は tier 1。kitty は実験的機能のため opt-in のみ）。`LANG`/`LC_*` が UTF-8 かつ `TERM != dumb` → tier 1。それ以外 → tier 0。色数は `COLORTERM=truecolor` → 24bit、なければ 256 色パレットに量子化。
 3. tier 2 有効時も、レイアウト計算・ネームプレート・凡例はテキストセルで描き、スプライト部分だけ graphics に置く（`pane.graphics.stream` は 0.7.4 に無いため全面画像アニメは行わない。将来 stream が来たら差し替え可能なよう Renderer を interface 化）。
+
+**tier 2 の判定条件（Stage 2 実測により精緻化）**: 当初は「`pane.graphics.info` が `feature_disabled` を返さない場合」としていたが、実測で 2 種類の拒否コードを確認したため「**`info` が成功した場合のみ**」に改めた。
+
+| コード | 状況 | 判断 |
+|---|---|---|
+| `feature_disabled` | `[experimental].kitty_graphics = false`（既定） | 恒久的に不可 → tier 1 |
+| `cell_size_unavailable` | kitty_graphics 有効だが herdr が外側端末のセルピクセルサイズを取得できない（WSL 実測） | 画像を配置できない → tier 1 |
+
+重要な実測事実: `cell_size_unavailable` の状態でも **`pane.graphics.set` は `{"type":"ok"}` を返す**。つまり `set` の成功は「画面に出た」ことの証拠にならず、可否判定に使えるのは `info` だけである。
+
+**tier 2 は加算的（additive）に実装する**: tier 1 のフレームを完全に描いた上に画像を重ねる。外側端末が kitty graphics を解さない場合（herdr からは検知不能）でも、ユーザーには動作する tier 1 オフィスが残り、空白にはならない。
 
 共通事項:
 - フレームは全画面再構成 + カーソルホーム書き換え（差分描画は Stage 2 で必要なら導入）。alternate screen + カーソル非表示。SIGWINCH（Windows ではリサイズポーリング）で再レイアウト。
@@ -264,7 +275,7 @@ command = ["<runtime>", "office"]
 | half-block ターミナル描画（pixtuoid） | 本設計 tier 1 と同手法であり、実運用例として妥当性の裏付けになる。MIT なので実装時の参照可（コード流用時は MIT 表記を継承） | 反映済み（§5 tier 1） |
 | モニタ発光色でツール種別を表現（pixtuoid） | herdr はツール粒度のイベントを配らない（`AgentStatus` 5 値のみ）ため現状は実現不可。`pane.output_matched` で部分近似は可能だがエージェント依存のパターン整備が必要 | 見送り（将来 herdr がツールイベントを配れば再検討） |
 | レイアウトエディタ（Pixel Agents） | 楽しさへの寄与は大きいが Stage 2 には過剰。まず自動レイアウト（§4 の安定ソート + 島）で成立させる | 見送り。将来拡張として state 側にレイアウト上書きの余地だけ確保（§8 設定の拡張点） |
-| エージェント種別ごとのキャラ差し替え（Pixel Agents の 6 キャラ） | 低コストで愛着に効く。`agent` フィールド（claude/codex/...）でスプライトを切替えるだけ | **採用**: §8 `theme` をパレットだけでなく「agent 種別 → スプライト」対応に拡張（Stage 2 で任意実装） |
+| エージェント種別ごとのキャラ差し替え（Pixel Agents の 6 キャラ） | 低コストで愛着に効く。`agent` フィールド（claude/codex/...）でスプライトを切替えるだけ | **採用・実装済み（issue #6）**: キャラは `theme` とは独立の軸とした（キャラ = 形状、テーマ = 配色。直交させたほうが組合せが増える）。claude / codex / gemini / cursor / droid + 既定キャラ、tier 0/1/2 すべてで有効 |
 | boss/サブエージェント階層の可視化（claude-office） | herdr の可視単位はペインであり、サブエージェントはサーバーから見えない。原則（herdr が公開する情報だけで動く、§1 非ゴール）に反する | 対象外 |
 
 ライセンス面: 比較 3 OSS はいずれも MIT であり、設計アイデアの参照は自由。コード・アセットを流用する場合は MIT 表記を継承する。スプライトアセットは自作する（Pixel Agents が用いる JIK-A-4 Metro City 等のサードパーティアセットは、アセット固有ライセンスの確認が必要になるため流用しない）。
@@ -294,4 +305,4 @@ command = ["<runtime>", "office"]
 1. コア: Subscriber + OfficeState + tier 0/1 Renderer + ジャンプ（Linux/macOS）
 2. Escalator + 設定 + 単発 action + state.json
 3. Windows 対応 + マーケットプレイス公開（topic 付与、README、スクリーンショット）
-4. tier 2（kitty graphics）+ テーマ
+4. tier 2（kitty graphics）+ テーマ + エージェント別キャラ — **実装済み（issue #6）**。tier 2 の判定条件は §5 のとおり実測で精緻化した

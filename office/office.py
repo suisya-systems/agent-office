@@ -20,13 +20,14 @@ below opens a socket, they hand the call to the Commander and pick the outcome
 up later as an ("action", ...) item.
 """
 
+import dataclasses
 import os
 import queue
 import signal
 import sys
 import time
 
-from . import statefile
+from . import graphics, statefile
 from .commander import FOCUS, PANE_LIST, Commander
 from .config import Config
 from .config import load as load_config
@@ -34,12 +35,19 @@ from .escalator import Escalator
 from .input import InputReader
 from .notifier import Notifier
 from .reconciler import Reconciler
-from .renderer import Renderer, detect_caps, format_name
+from .renderer import TIER_KITTY, TIER_UNICODE, Renderer, detect_caps, format_name
 from .screen import Screen
 from .state import OfficeState
 from .subscriber import Subscriber
 
 MIN_REDRAW_S = 0.04                                # cap redraws at ~25 fps
+
+# How long to leave a failed tier 2 overlay alone before trying it again. A
+# transient socket error should heal within a redraw or two, but the refusal
+# may also be standing - `herdr server reload-config` can switch
+# experimental.kitty_graphics back off underneath a running office - and that
+# must not turn into a pane.graphics.set on every single redraw.
+GRAPHICS_RETRY_S = 5.0
 
 TOAST_HINT = ("toasts are off: set [ui.toast] delivery = \"herdr\" "
               "in your herdr config")
@@ -57,7 +65,13 @@ class Office:
                                  workspace_globs=self.config.workspaces,
                                  exclude_agents=self.config.exclude_agents)
         self.renderer = Renderer(tier=tier, truecolor=truecolor,
-                                 name_template=self.config.name_template)
+                                 name_template=self.config.name_template,
+                                 theme=self.config.theme)
+        # tier 2 only, and only once run() has confirmed the pane can take
+        # graphics at all - see graphics.probe and design.md section 5.
+        self.graphics = (graphics.GraphicsSender(sock_path, self.q,
+                                                 self_pane_id)
+                         if tier == TIER_KITTY and self_pane_id else None)
         self.subscriber = Subscriber(sock_path, self.q, self_pane_id)
         self.reconciler = Reconciler(sock_path, self.q)
         self.input = InputReader(self.q)
@@ -93,6 +107,22 @@ class Office:
         self.config_warning = "; ".join(self.config.warnings)
         self.status_line = ""
         self.toast_hint = ""
+        self.graphics_note = ""
+        # Sprite boxes last handed to the graphics thread. They are plain
+        # scalars, so an unchanged frame is recognised without composing
+        # anything - which is what keeps the static overlay (design.md risk 6)
+        # from re-encoding a PNG on every animation tick.
+        # The last sprite boxes *submitted* to the graphics thread, and whether
+        # that submission landed. Two fields rather than one because "what was
+        # asked for" and "what is on screen" answer different questions: the
+        # first decides whether there is new work, the second whether a retry
+        # is owed. Conflating them is what previously let a failed send be
+        # mistaken for a drawn one.
+        self._overlay_boxes = None
+        self._overlay_ok = True
+        # Monotonic time before which the *same* request is not retried; see
+        # GRAPHICS_RETRY_S and _handle_graphics_result.
+        self._overlay_retry_at = 0.0
         # The "...ing" half of a status_line message that an in-flight action
         # put there, so its result can take it back down without wiping a
         # newer, unrelated notice that arrived in between.
@@ -116,6 +146,8 @@ class Office:
         self.input.start()
         self.notifier.start()
         self.commander.start()
+        if self.graphics:
+            self.graphics.start()
         self.subscriber.start()
         self.reconciler.start()
         last_render = 0.0
@@ -156,6 +188,13 @@ class Office:
             self.subscriber.stop()
             self.notifier.stop()
             self.commander.stop()
+            if self.graphics:
+                # Stop first, then clear synchronously: an overlay left behind
+                # outlives the frame it belonged to, and the pane is about to
+                # stop redrawing underneath it.
+                self.graphics.stop()
+                graphics.clear_now(self.graphics.sock_path,
+                                   self.graphics.pane_id)
             self.input.stop()
             # Feeder threads are stopped, so the state is settled: record it
             # rather than whatever the last periodic write happened to hold.
@@ -179,10 +218,43 @@ class Office:
             self.state, cols, rows, self.frame,
             muted=self.muted, show_help=self.show_help,
             escalated=self.escalator.escalated_ids(), status=self._status()))
+        self._sync_overlay()
+
+    def _sync_overlay(self):
+        """Keep the tier 2 image in step with the frame just written.
+
+        The renderer leaves the sprite rectangles of the frame it produced on
+        `sprite_boxes`; an unchanged list means an unchanged image, so nothing
+        is composed or sent. The help and compact views have no sprites, and
+        clear the overlay so it cannot sit on top of them.
+
+        The backoff gates *retries*, not new work. A frame that wants something
+        different from the last thing submitted is acted on at once - waiting
+        would leave the previous image over content it does not belong to,
+        which is precisely the case when the user presses `?` and the desks are
+        replaced by help text. Only asking for the same thing again is made to
+        wait, so a standing refusal costs one call per GRAPHICS_RETRY_S. A new
+        desired state cannot arrive faster than the layout changes, so acting
+        on it immediately cannot spin.
+        """
+        if self.graphics is None:
+            return
+        boxes = tuple(self.renderer.sprite_boxes)
+        if boxes == self._overlay_boxes:
+            if self._overlay_ok or self.state.now() < self._overlay_retry_at:
+                return
+        self._overlay_boxes = boxes
+        # Assume it lands; a ("graphics", (False, ...)) report flips this back
+        # and schedules the retry.
+        self._overlay_ok = True
+        if boxes:
+            self.graphics.set_boxes(boxes, self.renderer.art)
+        else:
+            self.graphics.clear()
 
     def _status(self):
         parts = [p for p in (self.config_warning, self.toast_hint,
-                             self.status_line) if p]
+                             self.graphics_note, self.status_line) if p]
         return "  |  ".join(parts)
 
     # -- event dispatch -------------------------------------------------
@@ -215,6 +287,8 @@ class Office:
             self._handle_notify_result(*payload)
         elif kind == "action":
             self._handle_action_result(*payload)
+        elif kind == "graphics":
+            self._handle_graphics_result(*payload)
         elif kind == "log":
             self.status_line = payload
 
@@ -246,6 +320,32 @@ class Office:
             self.toast_hint = ""
         elif reason != "no_foreground_client":
             self.status_line = "toast %s; retrying" % reason
+
+    def _handle_graphics_result(self, ok, message):
+        """Outcome of a pane.graphics.set/clear (tier 2 only).
+
+        A failure is worth a line because the tier 1 art is still underneath:
+        the office looks fine, and the user would otherwise have no way to
+        tell the overlay never arrived.
+
+        **Both outcomes move the state, and that is the point.** The sender is
+        serial and reports every request it runs, so the last report always
+        describes the last submission - which makes "latest report wins" the
+        correct rule here. Writing only the failure edge looked sufficient
+        (_sync_overlay already sets `_overlay_ok` optimistically on submit) but
+        is not: submit A, submit B while A is still out, then A fails and B
+        succeeds. The failure arrives second-to-last and leaves the office
+        believing B is missing, so it re-sends an overlay that is already on
+        screen. Cheap - the next optimistic submit heals it, so it costs one
+        wasted encode rather than a standing loop - but simply wrong.
+        """
+        self.graphics_note = "" if ok else "graphics: %s" % message
+        if ok:
+            self._overlay_ok = True
+            self._overlay_retry_at = 0.0
+        else:
+            self._overlay_ok = False
+            self._overlay_retry_at = self.state.now() + GRAPHICS_RETRY_S
 
     def _handle_key(self, name):
         cols, _ = self.screen.size()
@@ -356,5 +456,16 @@ def run():
     self_pane = os.environ.get("HERDR_PANE_ID")
     cfg = load_config()
     tier, truecolor = detect_caps(cfg.force_renderer)
+    if tier == TIER_KITTY:
+        # design.md section 5: an explicit renderer="kitty" still falls back to
+        # tier 1 *with a warning* when the server says no - which it does by
+        # default, since [experimental] kitty_graphics ships off. Asking once
+        # at startup keeps the answer out of the render loop.
+        ok, reason = graphics.probe(sock, self_pane)
+        if not ok:
+            tier = TIER_UNICODE
+            cfg = dataclasses.replace(
+                cfg, warnings=cfg.warnings
+                + ("renderer=kitty unavailable (%s); using unicode" % reason,))
     Office(sock, self_pane, tier, truecolor, config=cfg).run()
     return 0

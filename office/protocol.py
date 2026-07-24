@@ -6,6 +6,7 @@ connection open and streams event lines. Windows named pipes are out of scope
 for Stage 2 core (linux/macOS only).
 """
 
+import base64
 import json
 import socket
 
@@ -103,6 +104,40 @@ def workspace_list(sock_path: str, timeout: float = 5.0):
     """
     result = request(sock_path, "workspace.list", {}, timeout=timeout)
     return (result or {}).get("workspaces", [])
+
+
+def pane_graphics_info(sock_path: str, pane_id: str, timeout: float = 5.0):
+    """Probe the pane graphics feature (design.md section 5, tier 2).
+
+    Raises ProtocolError with code `feature_disabled` unless the user has set
+    `[experimental] kitty_graphics = true` in their herdr config, which is off
+    by default - so this is the check that decides whether tier 2 is real.
+    """
+    return request(sock_path, "pane.graphics.info", {"pane_id": pane_id},
+                   timeout=timeout)
+
+
+def pane_graphics_set(sock_path: str, pane_id: str, data: bytes,
+                      image_width: int, image_height: int, placement=None,
+                      timeout: float = 5.0):
+    """Place a PNG over a pane's cell grid.
+
+    `placement` is the cell rectangle the image is drawn into
+    (viewport_col/viewport_row/grid_cols/grid_rows); herdr scales the image to
+    it, which is why the office can lay itself out in cells and stay correct
+    whatever the terminal's cell size turns out to be.
+    """
+    params = {"pane_id": pane_id, "format": "png",
+              "image_width": image_width, "image_height": image_height,
+              "data_base64": base64.b64encode(data).decode("ascii")}
+    if placement:
+        params["placement"] = placement
+    return request(sock_path, "pane.graphics.set", params, timeout=timeout)
+
+
+def pane_graphics_clear(sock_path: str, pane_id: str, timeout: float = 5.0):
+    return request(sock_path, "pane.graphics.clear", {"pane_id": pane_id},
+                   timeout=timeout)
 
 
 def notification_show(sock_path: str, title: str, body: str = "",
