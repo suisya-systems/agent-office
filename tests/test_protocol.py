@@ -328,6 +328,23 @@ class RequestTest(unittest.TestCase):
         self.assertEqual(protocol.request("/s", "pane.list"), {"panes": []})
         self.assertEqual(conn.closed, 1)
 
+    def test_an_error_herdr_could_not_name_is_still_ours(self):
+        """herdr answers `"id": ""` when the request failed to deserialize.
+
+        Matching the id exactly dropped that line, and since herdr closes the
+        connection right after an error, the next read raised "connection
+        closed" - so a precise `invalid_request: missing field pane_id` came
+        back as a bare disconnect, on the platform with the least other
+        diagnostics available.
+        """
+        conn = self._serve(FakeConnection([
+            {"id": "", "error": {"code": "invalid_request",
+                                 "message": "missing field pane_id"}}]))
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            protocol.request("/s", "pane.focus")
+        self.assertEqual(caught.exception.code, "invalid_request")
+        self.assertEqual(conn.closed, 1)
+
     def test_an_error_reply_raises_and_still_closes(self):
         conn = self._serve(FakeConnection([
             {"error": {"code": "pane_not_found", "message": "gone"}}]))
@@ -372,6 +389,23 @@ class OpenSubscriptionTest(unittest.TestCase):
         with self.assertRaises(protocol.ProtocolError) as caught:
             self._open()
         self.assertEqual(caught.exception.code, "bad_ack")
+        self.assertEqual(conn.closed, 1)
+
+    def test_a_rejected_subscription_keeps_its_reason(self):
+        """herdr names the offending subscription, not the request.
+
+        A stale pane_id is the failure mode subscriber.py is written around -
+        it re-subscribes from a fresh pane.list precisely because one can go
+        away underneath it - so `pane_not_found` is the line that has to
+        survive to the log.
+        """
+        conn = self._serve(FakeConnection([
+            {"id": "office-L:sub:0:probe",
+             "error": {"code": "pane_not_found",
+                       "message": "pane w1:p9 not found"}}]))
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            self._open()
+        self.assertEqual(caught.exception.code, "pane_not_found")
         self.assertEqual(conn.closed, 1)
 
     def test_an_error_ack_closes_the_connection(self):

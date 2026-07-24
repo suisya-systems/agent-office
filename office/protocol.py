@@ -288,16 +288,29 @@ def _read_line(sock, buf: bytearray) -> bytes:
 def _is_answer(obj, req_id) -> bool:
     """True when this line answers our request rather than broadcasting news.
 
-    herdr echoes the request id, but an id-less reply is still accepted so a
-    build that drops it does not lock the office out; a broadcast event line
-    carries neither result nor error and never matches.
+    A broadcast event line carries neither result nor error, and never
+    matches. The id is a weaker signal than it looks, so it is matched
+    loosely - herdr echoes it for most replies, but measurably not for all:
+
+      * a request that fails to deserialize is answered with `"id": ""`,
+        because the server never got far enough to read our id;
+      * events.subscribe reports a bad subscription against
+        `<id>:sub:<n>:probe`, naming the offending subscription rather than
+        the request.
+
+    Insisting on an exact match would drop both, and since herdr closes the
+    connection straight after an error, the reply we skipped would be
+    replaced by "connection closed" - losing the one thing worth reading.
     """
     if not isinstance(obj, dict):
         return False
     if "result" not in obj and "error" not in obj:
         return False
     ident = obj.get("id")
-    return ident is None or ident == req_id
+    if not ident:                    # absent, null or "" - nothing to compare
+        return True
+    return (ident == req_id
+            or (isinstance(ident, str) and ident.startswith(req_id + ":")))
 
 
 def _raise_if_error(obj):

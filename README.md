@@ -41,6 +41,13 @@ herdr plugin link /path/to/agent-office
 herdr plugin pane open --plugin agent-office --entrypoint office --placement tab
 ```
 
+On Windows the pane id is `office-windows`, for the same reason the action ids
+differ — herdr answers `platform_unsupported` if you ask for the other one:
+
+```sh
+herdr plugin pane open --plugin agent-office --entrypoint office-windows --placement tab
+```
+
 ### Required: enable toast delivery
 
 Escalation toasts (a blocked agent that stays stuck) use herdr's
