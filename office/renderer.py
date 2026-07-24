@@ -49,6 +49,15 @@ STATUS_VISUAL = {
 
 MIN_COLS, MIN_ROWS = 80, 24
 
+# Bottom-row key hint shown during normal operation when the status line has no
+# real message to carry (Issue #17). Kept minimal on purpose - the full key map
+# stays in the ? overlay. ASCII only: the separator has to survive a cp932
+# console, where Screen's replace-fallback would otherwise punch a "?" through a
+# fancier glyph. KEY_HINT_SHORT is the graceful-degrade form for narrow panes -
+# it still surfaces the one key (?) that opens everything else.
+KEY_HINT = "? help | Enter jump | b blocked | q quit"
+KEY_HINT_SHORT = "? help"
+
 TIER_ASCII, TIER_UNICODE, TIER_KITTY = 0, 1, 2
 
 
@@ -241,25 +250,42 @@ class Renderer:
         return max(1, (max(20, cols) + 1) // (self.block_w + 1))
 
     def render(self, state, cols, rows, frame=0, muted=False, show_help=False,
-               escalated=(), status=""):
+               escalated=(), status="", show_hint=False):
         cols = max(20, cols)
         rows = max(6, rows)
         escalated = frozenset(escalated)
         self.sprite_boxes = []
-        # A status line (config warnings, toast delivery hint, last error)
-        # takes the bottom row when there is something to say.
-        inner = max(3, rows - 1) if status else rows
+        # A status line (config warnings, toast delivery hint, last error) takes
+        # the bottom row when there is something to say; a real message wins,
+        # and the key hint fills the row only when there is nothing else to say.
+        bottom = self._status_line(status, show_hint, cols)
+        inner = max(3, rows - 1) if bottom else rows
         if show_help:
             body = self._help_lines(cols, inner)
         elif cols < MIN_COLS or rows < MIN_ROWS or self.block_w + 1 > cols:
             body = self._compact(state, cols, inner, frame, escalated)
         else:
             body = self._full(state, cols, inner, frame, muted, escalated)
-        if status:
+        if bottom:
             body = list(body[:inner])
             body += [""] * (inner - len(body))
-            body.append(DIM + status[:cols] + RESET)
+            body.append(DIM + bottom + RESET)
         return self._paint(body, rows)
+
+    def _status_line(self, status, show_hint, cols):
+        """The bottom row's text: a real message (truncated to width) wins;
+        otherwise the key hint, but only when it fits. A hint too wide for the
+        pane degrades to KEY_HINT_SHORT and then to nothing, rather than being
+        cut mid-word - dropping a decorative hint beats corrupting the row."""
+        if status:
+            return status[:cols]
+        if not show_hint:
+            return ""
+        if len(KEY_HINT) <= cols:
+            return KEY_HINT
+        if len(KEY_HINT_SHORT) <= cols:
+            return KEY_HINT_SHORT
+        return ""
 
     # -- frame assembly -------------------------------------------------
 
