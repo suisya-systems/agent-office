@@ -218,7 +218,10 @@ class Office:
         self.screen.write(self.renderer.render(
             self.state, cols, rows, self.frame,
             muted=self.muted, show_help=self.show_help,
-            escalated=self.escalator.escalated_ids(), status=self._status()))
+            escalated=self.escalator.escalated_ids(), status=self._status(),
+            # The hint is a fallback for the status row, so it only makes sense
+            # while the office is on screen; the ? overlay carries the full map.
+            show_hint=not self.show_help))
         self._sync_overlay()
 
     def _sync_overlay(self):

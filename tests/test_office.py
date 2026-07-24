@@ -18,6 +18,7 @@ from office import office as office_mod
 from office.config import Config
 from office.escalator import Notification
 from office.office import TOAST_HINT, Office
+from office.renderer import KEY_HINT
 from office.screen import Screen
 
 
@@ -50,6 +51,35 @@ class StatusLineTest(unittest.TestCase):
         office._handle(("log", "reconnecting in 0.5s"))
         self.assertNotIn("connected", office._status())
         self.assertIn("reconnecting", office._status())
+
+
+class KeyHintWiringTest(unittest.TestCase):
+    """The office asks for the hint on a clean draw and drops it under help."""
+
+    def _draw(self, office):
+        frames = []
+        office.screen = _CaptureScreen(frames)
+        office._draw()
+        return frames[0]
+
+    def test_idle_draw_shows_the_hint(self):
+        self.assertIn(KEY_HINT, self._draw(make_office()))
+
+    def test_help_overlay_suppresses_the_hint(self):
+        office = make_office()
+        office.show_help = True
+        self.assertNotIn(KEY_HINT, self._draw(office))
+
+
+class _CaptureScreen:
+    def __init__(self, sink):
+        self._sink = sink
+
+    def size(self):
+        return 120, 40
+
+    def write(self, frame):
+        self._sink.append(frame)
 
 
 class NotifyResultTest(unittest.TestCase):

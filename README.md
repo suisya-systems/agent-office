@@ -169,6 +169,12 @@ and to opening a new pane. Deleting the file is harmless.
 | `?` | help overlay |
 | `q` | close the office pane |
 
+A minimal hint — `? help | Enter jump | b blocked | q quit` — sits on the status
+line during normal operation, so the `?` overlay is discoverable. A real message
+(a config warning, toast delivery note, or last error) takes the row while it has
+something to say, and the hint returns once the row is clear. On a narrow pane the
+hint shrinks to `? help` or drops entirely rather than wrapping the row.
+
 ## States and how they look
 
 herdr's `AgentStatus` is the only input; the office adds a couple of

@@ -4,7 +4,8 @@ import re
 import unittest
 
 from office import sprites
-from office.renderer import Renderer, detect_caps, format_name
+from office.renderer import (KEY_HINT, KEY_HINT_SHORT, Renderer, detect_caps,
+                             format_name)
 from office.state import OfficeState
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
@@ -139,6 +140,53 @@ class RenderSmokeTest(unittest.TestCase):
         frame = r.render(_state(), 120, 40, status="config broke")
         self.assertIn("config broke", frame)
         self.assertEqual(frame.count("\r\n"), 39)     # still exactly `rows`
+
+    def test_key_hint_shown_when_idle(self):
+        # Normal operation, nothing to say: the hint fills the status row so the
+        # ? overlay is discoverable, on every tier.
+        for tier in (0, 1, 2):
+            frame = Renderer(tier=tier, truecolor=(tier != 0)).render(
+                _state(), 120, 40, show_hint=True)
+            self.assertIn(KEY_HINT, frame)
+            self.assertEqual(frame.count("\r\n"), 39)  # still exactly `rows`
+
+    def test_key_hint_only_ascii(self):
+        # cp932 consoles must render the hint intact; ASCII-only guarantees it.
+        KEY_HINT.encode("cp932")
+        KEY_HINT.encode("ascii")
+
+    def test_real_message_wins_over_hint(self):
+        # A real status message takes the row; the hint returns when it clears.
+        r = Renderer(tier=1, truecolor=True)
+        frame = r.render(_state(), 120, 40, status="config broke", show_hint=True)
+        self.assertIn("config broke", frame)
+        self.assertNotIn(KEY_HINT, frame)
+        back = r.render(_state(), 120, 40, status="", show_hint=True)
+        self.assertIn(KEY_HINT, back)
+
+    def test_hint_not_shown_when_absent(self):
+        # No message and hint disabled (e.g. help overlay open): no bottom row.
+        r = Renderer(tier=1, truecolor=True)
+        self.assertNotIn(KEY_HINT, r.render(_state(), 120, 40, show_hint=False))
+
+    def test_hint_degrades_on_narrow_pane(self):
+        r = Renderer(tier=1, truecolor=True)
+        # Too narrow for the full hint but room for the short form.
+        mid = r.render(_state(), len(KEY_HINT_SHORT) + 2, 30, show_hint=True)
+        self.assertNotIn(KEY_HINT, mid)
+        self.assertIn(KEY_HINT_SHORT, visible(mid))
+        # No wrapping or row corruption: still exactly `rows` lines.
+        self.assertEqual(mid.count("\r\n"), 29)
+
+    def test_hint_dropped_when_too_narrow(self):
+        # Narrower than even the short form: drop the hint rather than cut it.
+        # render() clamps width to >= 20 (wider than the short form), so this
+        # last-ditch branch is checked on the resolver directly.
+        r = Renderer(tier=1, truecolor=True)
+        self.assertEqual(
+            r._status_line("", True, len(KEY_HINT_SHORT) - 1), "")
+        self.assertEqual(
+            r._status_line("", True, len(KEY_HINT_SHORT)), KEY_HINT_SHORT)
 
     def test_name_template_shortens_room_labels(self):
         s = OfficeState()
