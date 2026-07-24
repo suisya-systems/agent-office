@@ -33,6 +33,12 @@ class Desk:
     terminal_title: Optional[str] = None      # terminal_title_stripped
     status: str = "unknown"
     status_since: float = 0.0
+    # Which status change this is, counted across the whole fleet. Ordering a
+    # live event against an in-flight snapshot is a question about *sequence*,
+    # and status_since cannot answer it: Windows' monotonic clock advances in
+    # ~15.6ms steps and a pane.list round trip is about 1ms, so the event and
+    # the request that it overtook routinely carry the very same timestamp.
+    status_epoch: int = 0
     blocked_since: Optional[float] = None
     state_labels: Dict[str, str] = field(default_factory=dict)
 
@@ -68,10 +74,16 @@ class OfficeState:
         self.workspace_globs = tuple(workspace_globs)
         self.exclude_agents = frozenset(exclude_agents)
         self._now = now or time.monotonic
+        self._status_epoch = 0
 
     def now(self) -> float:
         """The model's clock, for callers timestamping a request against it."""
         return self._now()
+
+    def status_epoch(self) -> int:
+        """How many status changes the fleet has seen, as a marker a caller
+        can hold across a round trip and compare against later."""
+        return self._status_epoch
 
     # -- membership -----------------------------------------------------
 
@@ -103,14 +115,14 @@ class OfficeState:
         """
         return self.rooms.get(workspace_id, workspace_id)
 
-    def ingest_pane(self, info: dict, keep_status_since: float = None) -> None:
+    def ingest_pane(self, info: dict, since_epoch: int = None) -> None:
         """Upsert from a full PaneInfo (pane.list / pane.created / .updated).
 
         Idempotent: re-applying the same info is a no-op for timers because
         _set_status only moves status_since when the status actually changes.
 
-        `keep_status_since` marks a snapshot as possibly out of date: a desk
-        whose status changed after that moment keeps the live status, because
+        `since_epoch` marks a snapshot as possibly out of date: a desk whose
+        status has changed since that marker keeps the live status, because
         the snapshot was asked for before that event arrived. See
         reconcile_snapshot.
         """
@@ -150,8 +162,7 @@ class OfficeState:
         if isinstance(info.get("state_labels"), dict):
             desk.state_labels = info["state_labels"]
         status = info.get("agent_status", desk.status)
-        if (keep_status_since is not None and desk.status_since
-                and desk.status_since > keep_status_since):
+        if since_epoch is not None and desk.status_epoch > since_epoch:
             status = desk.status          # a newer event already overtook this
         self._set_status(desk, status)
         self._fix_selection()
@@ -189,6 +200,8 @@ class OfficeState:
             return                                # no change: keep timers
         desk.status = status
         desk.status_since = self._now()
+        self._status_epoch += 1
+        desk.status_epoch = self._status_epoch
         if status == "blocked":
             if desk.blocked_since is None:
                 desk.blocked_since = desk.status_since
@@ -199,21 +212,22 @@ class OfficeState:
         if self.desks.pop(pane_id, None) is not None:
             self._fix_selection()
 
-    def reconcile_snapshot(self, panes, keep_status_since: float = None) -> None:
+    def reconcile_snapshot(self, panes, since_epoch: int = None) -> None:
         """Apply a full pane.list snapshot as authoritative membership.
 
         Upserts every pane, then drops desks whose pane is absent (covers
         panes closed while we were disconnected / re-establishing).
 
-        Membership is always authoritative; status is not, if the caller says
-        when it asked. The periodic reconcile *wants* to overwrite status - a
-        missed pane.agent_status_changed is exactly what it is there to fix -
-        but a snapshot requested a socket round-trip ago (issue #12) may have
-        been overtaken by events the loop has already applied, and rolling
-        those back would blank an escalation timer.
+        Membership is always authoritative; status is not, if the caller hands
+        over the status_epoch it read before asking. The periodic reconcile
+        *wants* to overwrite status - a missed pane.agent_status_changed is
+        exactly what it is there to fix - but a snapshot requested a socket
+        round-trip ago (issue #12) may have been overtaken by events the loop
+        has already applied, and rolling those back would blank an escalation
+        timer.
         """
         for info in panes:
-            self.ingest_pane(info, keep_status_since=keep_status_since)
+            self.ingest_pane(info, since_epoch=since_epoch)
         present = {info.get("pane_id") for info in panes}
         for pid in [d.pane_id for d in self.desks.values() if d.pane_id not in present]:
             self.desks.pop(pid, None)
