@@ -129,7 +129,7 @@ class Office:
         # newer, unrelated notice that arrived in between.
         self.pending_status = ""
         # Refreshes still out on the Commander. Only the last one home takes
-        # the pending notice down; each carries its own "asked at" as a token,
+        # the pending notice down; each carries its own status_epoch as a token,
         # so overlapping presses never borrow each other's.
         self.refreshes_in_flight = 0
 
@@ -293,7 +293,7 @@ class Office:
         elif kind == "log":
             self.status_line = payload
 
-    def _apply_snapshot(self, panes, seed=False, keep_status_since=None):
+    def _apply_snapshot(self, panes, seed=False, since_epoch=None):
         """Apply a pane.list; `seed` marks the authoritative Subscriber path.
 
         Only that path may spend the recovered blocked_since: a refresh the
@@ -302,7 +302,7 @@ class Office:
         the seed on a partial view, handing an already-stuck agent a fresh
         countdown.
         """
-        self.state.reconcile_snapshot(panes, keep_status_since=keep_status_since)
+        self.state.reconcile_snapshot(panes, since_epoch=since_epoch)
         if seed and self._seed_blocked:
             # design.md section 7: adopt the previous run's blocked_since so an
             # agent stuck before the office opened is not given a fresh
@@ -407,9 +407,9 @@ class Office:
         self.state.set_filter(new)
         self._set_pending("filter %s; refreshing" % new)
         self.refreshes_in_flight += 1
-        self.commander.list_panes(token=self.state.now())
+        self.commander.list_panes(token=self.state.status_epoch())
 
-    def _handle_action_result(self, name, result, error, asked_at=None):
+    def _handle_action_result(self, name, result, error, since_epoch=None):
         """Outcome of a Commander action, one socket round-trip after the key.
 
         Only the refresh puts a pending notice up, so only the refresh's own
@@ -438,7 +438,7 @@ class Office:
             # to sweep (issue #1); the window here is one socket round-trip -
             # 2ms against herdr 0.7.4 - and self-healing, so it is documented
             # rather than defended against with tombstones in OfficeState.
-            self._apply_snapshot(result, keep_status_since=asked_at)
+            self._apply_snapshot(result, since_epoch=since_epoch)
             if not self.refreshes_in_flight:
                 self._clear_pending()
 

@@ -286,20 +286,41 @@ class ReconcileTest(unittest.TestCase):
         s.reconcile_snapshot([pane("p2"), pane("p3")])
         self.assertEqual(sorted(s.desks), ["p2", "p3"])
 
-    def test_keep_status_since_protects_a_newer_status(self):
+    def test_since_epoch_protects_a_newer_status(self):
         clock = FakeClock()
         s = OfficeState(now=clock)
         s.ingest_pane(pane("p1", status="working"))
-        asked_at = s.now()                    # a snapshot goes out...
+        asked_at = s.status_epoch()           # a snapshot goes out...
         clock.advance(1)
         s.set_status("p1", "blocked")         # ...and an event overtakes it
         blocked_since = s.desks["p1"].blocked_since
         s.reconcile_snapshot([pane("p1", status="working")],
-                             keep_status_since=asked_at)
+                             since_epoch=asked_at)
         self.assertEqual(s.desks["p1"].status, "blocked")
         self.assertEqual(s.desks["p1"].blocked_since, blocked_since)
 
-    def test_without_keep_status_since_the_snapshot_still_wins(self):
+    def test_a_standing_clock_does_not_lose_the_newer_status(self):
+        """The same thing, with no time passing at all.
+
+        This is the real shape of it, not a contrived one. Windows' monotonic
+        clock moves in ~15.6ms steps and the pane.list round trip it is being
+        compared against is about 1ms, so the event and the request it
+        overtook land on the very same reading - every time, not rarely.
+        While the ordering was decided by comparing timestamps, the snapshot
+        won, the fleet showed `working` for an agent that was blocked, and
+        blocked_since was blanked, which is the escalation timer.
+        """
+        s = OfficeState(now=lambda: 1000.0)   # a clock that never advances
+        s.ingest_pane(pane("p1", status="working"))
+        asked_at = s.status_epoch()
+        s.set_status("p1", "blocked")
+        blocked_since = s.desks["p1"].blocked_since
+        s.reconcile_snapshot([pane("p1", status="working")],
+                             since_epoch=asked_at)
+        self.assertEqual(s.desks["p1"].status, "blocked")
+        self.assertEqual(s.desks["p1"].blocked_since, blocked_since)
+
+    def test_without_since_epoch_the_snapshot_still_wins(self):
         # The periodic reconcile is authoritative on purpose: a missed
         # pane.agent_status_changed is what it exists to repair.
         clock = FakeClock()
@@ -309,12 +330,25 @@ class ReconcileTest(unittest.TestCase):
         s.reconcile_snapshot([pane("p1", status="working")])
         self.assertEqual(s.desks["p1"].status, "working")
 
-    def test_keep_status_since_still_admits_a_new_pane(self):
+    def test_since_epoch_still_admits_a_new_pane(self):
         clock = FakeClock()
         s = OfficeState(now=clock)
         s.reconcile_snapshot([pane("p1", status="blocked")],
-                             keep_status_since=s.now())
+                             since_epoch=s.status_epoch())
         self.assertEqual(s.desks["p1"].status, "blocked")
+
+    def test_a_snapshot_that_did_not_overtake_anything_is_applied(self):
+        """The epoch only vetoes desks that actually moved after the ask."""
+        s = OfficeState(now=lambda: 1000.0)
+        s.ingest_pane(pane("p1", status="working"))
+        s.ingest_pane(pane("p2", status="working"))
+        asked_at = s.status_epoch()
+        s.set_status("p1", "blocked")         # p1 moved, p2 did not
+        s.reconcile_snapshot([pane("p1", status="working"),
+                              pane("p2", status="blocked")],
+                             since_epoch=asked_at)
+        self.assertEqual(s.desks["p1"].status, "blocked")   # event held
+        self.assertEqual(s.desks["p2"].status, "blocked")   # snapshot applied
 
 
 if __name__ == "__main__":
