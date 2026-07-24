@@ -1,16 +1,16 @@
 # Agent Office
 
-A [herdr](https://herdr.dev) plugin that draws your agent fleet as a **pixel-art
-office**: every herdr pane running an agent becomes a character at a desk that
+A [herdr](https://herdr.dev) plugin that draws your agent fleet as a pixel-art
+office: every herdr pane running an agent becomes a character at a desk that
 animates by status (idle / working / blocked / done). Blocked agents raise a
 hand; one key jumps you straight to them.
 
-**What makes it different:** existing agent-visualizers detect state on the
-*client* side — per-agent hooks or transcript-file parsing that each new agent
-requires custom integration work. Agent Office reads state from herdr's native
-`pane.agent_status_changed`, so it works with *every* agent herdr detects
+Existing agent-visualizers detect state on the *client* side, with per-agent
+hooks or transcript-file parsing, so each new agent needs custom integration
+work. Agent Office reads state from herdr's native
+`pane.agent_status_changed`, so it works with every agent herdr detects
 (claude / codex / gemini / cursor / …) with zero setup, keeps working over
-`herdr --remote`, and lives in the terminal where you already are — from
+`herdr --remote`, and lives in the terminal where you already are. From
 noticing a blocked agent to jumping to its pane there is no context switch.
 
 Design is in [`docs/design.md`](docs/design.md) (source of truth).
@@ -37,7 +37,7 @@ herdr plugin pane open --plugin agent-office --entrypoint office --placement tab
 ### Required: enable toast delivery
 
 Escalation toasts (a blocked agent that stays stuck) use herdr's
-`notification.show`, and herdr ships with toast delivery **off by default**. To
+`notification.show`, and herdr ships with toast delivery off by default. To
 receive escalations, set this in your herdr config:
 
 ```toml
@@ -45,17 +45,17 @@ receive escalations, set this in your herdr config:
 delivery = "herdr"
 ```
 
-Without it the office view still works — desks, hand-raising, and jump are
-unaffected — but no toasts are delivered. If Agent Office sees herdr reject a
+Without it the office view still works (desks, hand-raising, and jump are
+unaffected), but no toasts are delivered. If Agent Office sees herdr reject a
 toast because delivery is off, it says so on its status line rather than
 retrying forever.
 
 ## Configuration
 
-Agent Office is **zero-config**: with no file at all every setting below falls
+Agent Office is zero-config: with no file at all every setting below falls
 back to its default. To change something, create `config.toml` in the plugin's
 config directory (herdr passes it as `HERDR_PLUGIN_CONFIG_DIR`; typically
-`~/.config/herdr/plugins/agent-office/`). Settings are read once at startup —
+`~/.config/herdr/plugins/agent-office/`). Settings are read once at startup;
 reopen the office pane to apply changes.
 
 ```toml
@@ -93,7 +93,7 @@ label like `claude-org/8f3a…/g7/project:agent-office/a2` into `a2`.
 
 **`theme`** repaints the office. `default` is the original look; `midnight` is
 a darker, neon-lit room; `daylight` is a bright one. Themes colour the sprites
-*and* the text (header, nameplates, status words), so they work on every
+and the text (header, nameplates, status words), so they work on every
 renderer tier, including the ASCII one.
 
 **`renderer = "kitty"`** turns on tier 2, which draws the same office and then
@@ -103,8 +103,8 @@ whenever either is missing:
 
 - `[experimental] kitty_graphics = true` in your **herdr** config (off by
   default), and
-- an outer terminal that speaks the kitty graphics protocol *and* reports its
-  cell size — herdr refuses with `cell_size_unavailable` when it cannot get
+- an outer terminal that speaks the kitty graphics protocol and reports its
+  cell size; herdr refuses with `cell_size_unavailable` when it cannot get
   one (seen under WSL).
 
 The sprites are static in tier 2: herdr 0.7.4 has no streaming graphics call,
@@ -115,19 +115,19 @@ you with a normal, working office rather than a blank one.
 ### Escalation behaviour
 
 A desk that stays `blocked` past `blocked_threshold_s` raises a toast, and its
-speech bubble turns from `!` to a red `!!` on screen. Details worth knowing:
+speech bubble turns from `!` to a red `!!` on screen.
 
 - **Agents that block together share one toast.** After the first desk crosses
   the threshold there is a 5 second collection window, so three stuck agents
   produce `✋ 3 agents are waiting`, not three separate toasts.
 - **Reminders continue** every `renotify_interval_s` while the agent is still
   blocked, labelled `2nd reminder`, `3rd reminder`, and so on.
-- **Unblocking resets everything** — the next block starts a fresh countdown.
+- **Unblocking resets everything**: the next block starts a fresh countdown.
 - **Reopening the office pane does not reset the clock.** An agent already
   blocked at startup keeps the wait time recorded in `state.json`, so a restart
   does not hand a stuck agent another 90 seconds of silence. After a long
-  outage (5 minutes without the office running) the countdown does start fresh
-  — by then the agent may have unblocked and blocked again unobserved.
+  outage (5 minutes without the office running) the countdown does start
+  fresh; by then the agent may have unblocked and blocked again unobserved.
 - **`s` mutes escalation** for the session; the desks still show raised hands.
 - If herdr rate-limits a toast, Agent Office backs off 30 seconds and retries.
 
@@ -164,21 +164,21 @@ lifecycle/overlay states on top.
 |---|---|---|---|
 | `IDLE` | `idle` | leaning back, coffee cup | steam wavers |
 | `WORKING` | `working` | hunched over keyboard, monitor lit green | hands type |
-| `BLOCKED` | `blocked` | **hand raised** + `!` speech bubble overhead | bubble blinks |
+| `BLOCKED` | `blocked` | hand raised + `!` speech bubble overhead | bubble blinks |
 | `DONE` | `done` | stretching, green checkmark overhead | check pulses |
 | `UNKNOWN` | `unknown` | grey silhouette, monitor off | none |
 | `EMPTY` | pane gone / filtered out | desk with dark monitor only | none |
 
 Overlays are drawn on top of the state: **FOCUSED** (brightened floor for the
 pane focused in herdr), **SELECTED** (accent-colored desk frame under the office
-cursor), and **ESCALATED** (a blocked desk past its threshold — the bubble turns
+cursor), and **ESCALATED** (a blocked desk past its threshold: the bubble turns
 from `!` to a red `!!`, in sync with the toast). See
 [`docs/character-states.md`](docs/character-states.md) for the full spec.
 
 ### Who sits at the desk
 
 The character is picked from the `agent` herdr already reports, so each kind of
-agent is recognisable at a glance — `claude`, `codex`, `gemini`, `cursor` and
+agent is recognisable at a glance: `claude`, `codex`, `gemini`, `cursor` and
 `droid` each get their own headgear, accent colour and ASCII head. Anything
 else, including an agent herdr learns to detect after this release, sits down as
 the default character rather than as nothing. The state always wins over the
