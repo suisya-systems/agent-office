@@ -28,7 +28,9 @@ the terminal is too small for even one row of desks, it drops to a compact
 one-line-per-desk summary.
 """
 
+import codecs
 import os
+import sys
 
 from . import sprites, themes
 
@@ -50,7 +52,17 @@ MIN_COLS, MIN_ROWS = 80, 24
 TIER_ASCII, TIER_UNICODE, TIER_KITTY = 0, 1, 2
 
 
-def detect_caps(force_renderer=None, env=None):
+def is_utf8_encoding(name):
+    """True / False for a known codec, None when there is nothing to go on."""
+    if not name:
+        return None
+    try:
+        return codecs.lookup(name).name == "utf-8"
+    except LookupError:
+        return None
+
+
+def detect_caps(force_renderer=None, env=None, stream=None):
     """Return (tier, truecolor). 0 = ASCII, 1 = half-block, 2 = kitty.
 
     Tier 2 is only ever reached by asking for it (`renderer = "kitty"`): it is
@@ -59,9 +71,19 @@ def detect_caps(force_renderer=None, env=None):
     Whether it then actually works is a question for the server, not the
     environment - office.run() probes pane.graphics.info and drops back to
     tier 1 with a warning if the answer is no.
+
+    Two things are asked, in this order. *Can* stdout carry the frame - a
+    cp932 console cannot encode a half-block, so a demonstrably non-UTF-8
+    encoder forces tier 0 even when the config asked for something richer.
+    Then, does the terminal want it - the locale variables answer that on
+    unix, and on Windows, which leaves them unset, stdout answers it instead.
     """
     env = env if env is not None else os.environ
+    stream = stream if stream is not None else sys.stdout
     truecolor = env.get("COLORTERM", "").lower() in ("truecolor", "24bit")
+    encoder_utf8 = is_utf8_encoding(getattr(stream, "encoding", None))
+    if encoder_utf8 is False:
+        return TIER_ASCII, truecolor
     if force_renderer == "ascii":
         return TIER_ASCII, truecolor
     if force_renderer == "unicode":
@@ -70,7 +92,13 @@ def detect_caps(force_renderer=None, env=None):
         return TIER_KITTY, truecolor
     term = env.get("TERM", "")
     lang = (env.get("LC_ALL") or env.get("LC_CTYPE") or env.get("LANG") or "")
-    utf8 = "utf-8" in lang.lower() or "utf8" in lang.lower()
+    if lang:
+        utf8 = "utf-8" in lang.lower() or "utf8" in lang.lower()
+    else:
+        # No locale to read: trust stdout only when it says something. An
+        # unknown encoding (a StringIO under test, a stream with no encoding
+        # attribute) is not evidence of a UTF-8 terminal.
+        utf8 = encoder_utf8 is True
     if term == "dumb" or not utf8:
         return TIER_ASCII, truecolor
     return TIER_UNICODE, truecolor

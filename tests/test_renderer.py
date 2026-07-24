@@ -25,27 +25,44 @@ def _state():
     return s
 
 
+class Stream:
+    """A stdout stand-in that carries nothing but its encoding.
+
+    Passed explicitly everywhere below, because detect_caps now consults
+    stdout and the answer must not depend on how the CI runs the suite.
+    """
+
+    def __init__(self, encoding):
+        self.encoding = encoding
+
+
+UTF8 = Stream("utf-8")
+CP932 = Stream("cp932")
+
+
 class CapsTest(unittest.TestCase):
     def test_force_ascii(self):
-        self.assertEqual(detect_caps("ascii", {})[0], 0)
+        self.assertEqual(detect_caps("ascii", {}, UTF8)[0], 0)
 
     def test_force_unicode(self):
-        self.assertEqual(detect_caps("unicode", {})[0], 1)
+        self.assertEqual(detect_caps("unicode", {}, UTF8)[0], 1)
 
     def test_dumb_term_is_tier0(self):
-        self.assertEqual(detect_caps(None, {"TERM": "dumb", "LANG": "C.UTF-8"})[0], 0)
+        self.assertEqual(
+            detect_caps(None, {"TERM": "dumb", "LANG": "C.UTF-8"}, UTF8)[0], 0)
 
     def test_utf8_is_tier1_truecolor(self):
         tier, tc = detect_caps(None, {"TERM": "xterm-256color",
                                       "LANG": "en_US.UTF-8",
-                                      "COLORTERM": "truecolor"})
+                                      "COLORTERM": "truecolor"}, UTF8)
         self.assertEqual((tier, tc), (1, True))
 
     def test_non_utf8_is_tier0(self):
-        self.assertEqual(detect_caps(None, {"TERM": "xterm", "LANG": "C"})[0], 0)
+        self.assertEqual(
+            detect_caps(None, {"TERM": "xterm", "LANG": "C"}, UTF8)[0], 0)
 
     def test_force_kitty_is_tier2(self):
-        self.assertEqual(detect_caps("kitty", {})[0], 2)
+        self.assertEqual(detect_caps("kitty", {}, UTF8)[0], 2)
 
     def test_auto_never_picks_kitty(self):
         """tier 2 is opt-in: experimental in herdr, and needs a capable term."""
@@ -53,7 +70,31 @@ class CapsTest(unittest.TestCase):
                      "COLORTERM": "truecolor"},
                     {"TERM": "xterm-256color", "LANG": "en_US.UTF-8"},
                     {"TERM": "dumb"}):
-            self.assertNotEqual(detect_caps(None, env)[0], 2)
+            self.assertNotEqual(detect_caps(None, env, UTF8)[0], 2)
+
+    def test_a_windows_console_is_read_off_stdout(self):
+        """Windows leaves the locale variables unset, so the old LANG-only
+        test called every Windows console tier 0 - including UTF-8 ones."""
+        self.assertEqual(detect_caps(None, {}, UTF8)[0], 1)
+        self.assertEqual(detect_caps(None, {}, CP932)[0], 0)
+
+    def test_an_encoder_that_cannot_take_the_frame_wins(self):
+        """A half-block does not exist in cp932, so asking for one is not
+        enough - the write would raise part-way through a frame."""
+        self.assertEqual(detect_caps(None, {"LANG": "en_US.UTF-8"}, CP932)[0], 0)
+        self.assertEqual(detect_caps("unicode", {}, CP932)[0], 0)
+        self.assertEqual(detect_caps("kitty", {}, CP932)[0], 0)
+
+    def test_encoding_aliases_are_normalised(self):
+        for name in ("UTF8", "utf_8", "cp65001"):
+            self.assertEqual(detect_caps(None, {}, Stream(name))[0], 1, name)
+
+    def test_an_unknown_encoding_falls_back_to_the_locale(self):
+        """A StringIO has no encoding; that is ignorance, not a cp932 console,
+        so the locale keeps the last word and the conservative answer holds."""
+        self.assertEqual(detect_caps(None, {}, Stream(None))[0], 0)
+        self.assertEqual(
+            detect_caps(None, {"LANG": "en_US.UTF-8"}, Stream(None))[0], 1)
 
 
 class FormatNameTest(unittest.TestCase):

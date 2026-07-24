@@ -27,6 +27,16 @@ class Screen:
     # -- lifecycle ------------------------------------------------------
 
     def open(self):
+        # Best effort: ask the stream to substitute characters it cannot
+        # encode rather than raise. Not every stream is a TextIOWrapper (a
+        # StringIO under test is not), and the encoding itself is left alone -
+        # what the terminal on the other end reads is not ours to change.
+        reconfigure = getattr(self.stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
         self._write(ENTER)
 
     def close(self):
@@ -36,8 +46,20 @@ class Screen:
         self._write(frame)
 
     def _write(self, text):
-        self.stream.write(text)
+        try:
+            self.stream.write(text)
+        except UnicodeEncodeError:
+            # A cp932 console cannot take a half-block, and tier 0 is no
+            # guarantee either: pane titles and agent names come from herdr
+            # and can hold anything. Losing a glyph beats losing the frame -
+            # and beats the traceback landing on the alternate screen.
+            self.stream.write(self._encodable(text))
         self.stream.flush()
+
+    def _encodable(self, text):
+        """The frame with unencodable characters replaced, same length."""
+        encoding = getattr(self.stream, "encoding", None) or "ascii"
+        return text.encode(encoding, "replace").decode(encoding, "replace")
 
     # -- geometry -------------------------------------------------------
 

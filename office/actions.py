@@ -27,6 +27,18 @@ from .state import OfficeState
 PANE_TITLE = "Agent Office"          # manifest [[panes]].title == the pane label
 
 
+def office_entrypoint(os_name=None):
+    """The manifest pane id to open for this platform.
+
+    The manifest declares the pane twice because the interpreter argv differs
+    per platform (see herdr-plugin.toml), and herdr requires ids to be unique
+    - so "which pane do I open" has a platform-dependent answer, and asking
+    for the wrong one comes back as `platform_unsupported`.
+    """
+    name = os.name if os_name is None else os_name
+    return "office-windows" if name == "nt" else "office"
+
+
 def _sock():
     sock = os.environ.get("HERDR_SOCKET_PATH")
     if not sock:
@@ -125,7 +137,8 @@ def action_open():
             pass                                         # fall through to open
     try:
         protocol.request(sock, "plugin.pane.open",
-                         {"plugin_id": plugin_id, "entrypoint": "office",
+                         {"plugin_id": plugin_id,
+                          "entrypoint": office_entrypoint(),
                           "focus": True})
     except Exception as exc:                              # noqa: BLE001
         sys.stderr.write("open failed: %s\n" % exc)

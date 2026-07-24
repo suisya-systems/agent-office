@@ -18,7 +18,14 @@ Design is in [`docs/design.md`](docs/design.md) (source of truth).
 ## Quick Start
 
 Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.4 and
-`python3` on PATH.
+Python 3.10+ on PATH: `python3` on Linux and macOS, `py` (the Python launcher,
+which the python.org installer adds) on Windows.
+
+On Windows the action ids carry a `-windows` suffix — `agent-office.open-windows`
+and `agent-office.jump-blocked-windows` — because herdr requires unique ids and
+the manifest has to declare a separate entry per platform to name the right
+interpreter. Windows plugin support is in preview in herdr, and kitty graphics
+(tier 2) is unverified there, so leave `renderer` at its default.
 
 **Install (marketplace publication pending):** once published under the
 `herdr-plugin` topic, install directly from GitHub:

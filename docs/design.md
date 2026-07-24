@@ -240,6 +240,9 @@ command = ["<runtime>", "office"]
 - `placement = "tab"` を既定とする（オフィスは横長レイアウトのため split より tab/zoomed が向く。ユーザーは `plugin.pane.open` の placement 上書きで split にもできる）。
 - バージョニング: semver。`min_herdr_version` は依存 API（events.subscribe の per-pane 購読、plugin.*）が揃う 0.7.4。tier 2 が `pane.graphics.stream` に依存する時点で引き上げ。
 - Windows: named pipe 接続と ANSI 出力（Windows Terminal は対応）に依存。cp932 コンソールを考慮し、**CLI の `--help` や print は ASCII のみ**、tier 判定で非 UTF-8 なら tier 0。
+  - tier 判定の材料は `LANG` だけでは足りない。Windows はロケール変数を設定しないため、`LANG` 未設定時は `sys.stdout.encoding` を見る。逆に encoder が UTF-8 でないと判明した場合は `renderer` 設定より優先して tier 0 に落とす（cp932 では半ブロックが encode できず、フレームの途中で `UnicodeEncodeError` になるため）。
+  - tier 0 でも安全ではない。ペインラベルやエージェント名は herdr 由来で任意の文字を含みうるので、`Screen._write` に `errors="replace"` のフォールバックを置く。1 文字が化けるのは、alternate screen 上にトレースバックを吐いてフレームごと壊すよりましである。
+  - `command` は herdr がシェルを介さず argv として spawn し、argv[0] を PATH（Windows では PATHEXT も）で解決する。3 プラットフォーム共通で解決できるインタープリタ名は存在しない（`python3.exe` は python.org のインストーラが作らない）ため、**pane / action は platform ごとに別 id で二重宣言する**（item-level `platforms` が top-level を上書きし、id はプラグイン内で一意である必要がある）。Windows 側は `py -3` を使う。`actions.py` の `plugin.pane.open` もこの id をプラットフォームで切り替える。
 
 ## 10. claude-org からの利用シナリオ（broker herdr バックエンド時）
 
@@ -285,15 +288,20 @@ command = ["<runtime>", "office"]
 **推奨: Python 3.10+、stdlib のみ**（`socket` + `json` + `selectors`）。
 
 - 根拠: NDJSON over unix socket / named pipe は stdlib で足りる。ピクセルアートは ANSI 文字列生成であり描画ライブラリ不要。`[[build]]` 無しで `plugin install` が完結する（Node は `npm ci`、Rust はビルドが必要）。モック（本リポジトリ）からの連続性も高い。
-- Windows: named pipe は `open(HERDR_SOCKET_PATH, 'r+b', buffering=0)` によるバイトストリーム読み書きで接続する。**Stage 2 の最初に Windows 実機でスモークすること**（リスク: pipe のモードによっては pywin32 相当が必要になる。その場合 Windows のみ `platforms` から一時除外し、tier 対応を追う）。
-- 対抗案 Node.js（`net` が named pipe をネイティブサポート）は Windows 接続の確実性で勝るが、ランタイム存在の前提と `[[build]]` が必要になる。Python 案が Windows で行き詰まった場合の切替先として保持。
+- Windows: named pipe への接続は **stdlib のみで成立する**（herdr 実機で検証済み。pywin32 も Node fallback も不要）。ただし素朴な `open(HERDR_SOCKET_PATH, ...)` は誤りで、以下の 4 点が必須:
+  1. **パス変換**。herdr は `HERDR_SOCKET_PATH` にファイルシステムパスを渡すが、API 本体はその文字列をそのまま名前に持つ named pipe である。`r"\\.\pipe" + "\\" + HERDR_SOCKET_PATH` へ変換して開く。変換を忘れると**例外が出ない**: 同じパスに 25 バイトの `pid:timestamp` マーカーファイルが実在するため `open()` が成功し、その中身が返る。
+  2. **接続直後の健全性検査**。上記の silent failure と、`"r+b"` で開いたマーカーファイルへ NDJSON を書いて herdr の生存マーカーを破壊する事故を、`os.fstat` + `stat.S_ISFIFO`（CPython は Windows で `GetFileType` を `st_mode` に写す）で送信前に潰す。追加の ping リクエストは不要。
+  3. **`ERROR_PIPE_BUSY` のリトライ**。herdr は待受インスタンスを常に 1 本しか出さないため、2 本目の接続はこの隙間に入って失敗する（実測で約 1/3 が該当）。stdlib では `OSError errno=22 (EINVAL)` / `winerror=None` に化けるので、monotonic な総 deadline 付きの sleep リトライを自前で書く。**このリトライは Windows 専用の open にのみ置く**。共通の `connect()` に置くと unix socket の正当な `EINVAL` を誤ってリトライする。
+  4. **socket 形状のアダプタ層**。pipe には `settimeout` がなく、他スレッドが read 中のハンドルを close すると**閉じた側もハングする**（実測）。よってアダプタは blocking read を一切張らず、`PeekNamedPipe`（ctypes、stdlib）で到着済みバイト数を見てからその分だけ読む。これで本物の read timeout が作れ、`close()` はフラグを立てるだけで待機中の reader を解放できる。`sendall` / `recv` / `settimeout` / `close` の 4 つを備えれば subscriber / commander / graphics / notifier は無改修で済む。
+  - 残る差分: **送信側の timeout は Windows では再現できない**（サーバがドレインするまで write がブロックする）。送信はいずれも専用スレッド上なので描画ループは止まらない。
+- 対抗案 Node.js（`net` が named pipe をネイティブサポート）は不要になった。stdlib で成立したため破棄してよい。
 
 ## 13. リスクとオープン事項
 
 | # | 事項 | 影響 | 対応 |
 |---|---|---|---|
 | 1 | `pane.updated` が status 変化で発火するか未確認 | 接続管理の複雑さ | Stage 2 冒頭で実測（§3）。どちらでも設計は成立 |
-| 2 | Python での Windows named pipe 接続 | Windows 対応時期 | Stage 2 冒頭でスモーク（§12） |
+| 2 | Python での Windows named pipe 接続 | Windows 対応時期 | **解消**。herdr 実機で stdlib のみで成立を確認し、§12 の 4 点（パス変換 / 健全性検査 / busy リトライ / アダプタ層）として実装済み。Node fallback は破棄 |
 | 3 | 大規模フリート（50+ ペイン）での接続 S 張り直しコスト | パフォーマンス | デバウンス済み。実測して問題なら購読を island 単位に分割 |
 | 4 | `ui.toast.delivery` 既定 off による「通知が来ない」問い合わせ | UX | README Quick Start + 初回起動時に delivery=off を検出したら画面内に 1 行警告 |
 | 5 | 端末リサイズ・小画面での可読性 | UX | 縮小表現（§5）。モックで最小 80x24 を確認 |

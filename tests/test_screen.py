@@ -11,6 +11,46 @@ import unittest
 from office import cli, screen
 
 
+class Cp932Stream(io.StringIO):
+    """A console that refuses what it cannot encode, exactly where a real one
+    does - inside write(), before anything has reached the terminal."""
+
+    encoding = "cp932"
+
+    def write(self, text):
+        text.encode("cp932")
+        return super().write(text)
+
+
+class NarrowConsoleTest(unittest.TestCase):
+    """A cp932 console must cost a glyph, never the frame.
+
+    Picking tier 0 is not enough on its own: pane titles, agent names and room
+    labels all come from herdr and can hold anything at all, so an ASCII frame
+    can still carry a character the console cannot encode. Without the
+    fallback the traceback lands on the alternate screen and the office is
+    left as wreckage.
+    """
+
+    def setUp(self):
+        self.out = Cp932Stream()
+        self.screen = screen.Screen(self.out)
+
+    def test_a_half_block_frame_costs_a_glyph_not_the_frame(self):
+        self.screen.write("desk ▀▀ here")
+        self.assertIn("desk ", self.out.getvalue())
+        self.assertIn("here", self.out.getvalue())
+
+    def test_the_replacement_keeps_the_frame_the_same_width(self):
+        frame = "abc\U0001f680def"
+        self.screen.write(frame)
+        self.assertEqual(len(self.out.getvalue()), len(frame))
+
+    def test_an_encodable_frame_is_untouched(self):
+        self.screen.write("\x1b[Hplain ascii")
+        self.assertEqual(self.out.getvalue(), "\x1b[Hplain ascii")
+
+
 class ScreenTest(unittest.TestCase):
     def setUp(self):
         self.out = io.StringIO()
@@ -29,6 +69,10 @@ class ScreenTest(unittest.TestCase):
     def test_write_passes_the_frame_through_verbatim(self):
         self.screen.write("\x1b[Hframe")
         self.assertEqual(self.out.getvalue(), "\x1b[Hframe")
+
+    def test_open_survives_a_stream_that_cannot_be_reconfigured(self):
+        self.screen.open()
+        self.assertEqual(self.out.getvalue(), screen.ENTER)
 
     def test_starts_dirty_so_the_first_pass_paints(self):
         self.assertTrue(self.screen.resized)

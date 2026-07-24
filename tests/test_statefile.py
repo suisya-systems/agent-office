@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from office import statefile
-from office.actions import pick_blocked, visible_panes
+from office.actions import office_entrypoint, pick_blocked, visible_panes
 from office.config import Config
 from office.state import OfficeState
 
@@ -344,6 +344,22 @@ class VisiblePanesTest(unittest.TestCase):
             [p["pane_id"] for p in visible_panes("/nonexistent.sock", panes,
                                                  Config(filter="all"))],
             ["p9"])
+
+
+class OfficeEntrypointTest(unittest.TestCase):
+    """Which manifest pane the open action asks herdr for.
+
+    The manifest declares the pane once per platform because no interpreter
+    name resolves everywhere, and herdr wants unique ids - so asking for the
+    unix id on Windows comes back as `platform_unsupported` and the action
+    quietly does nothing.
+    """
+
+    def test_unix_opens_the_unix_pane(self):
+        self.assertEqual(office_entrypoint("posix"), "office")
+
+    def test_windows_opens_the_windows_pane(self):
+        self.assertEqual(office_entrypoint("nt"), "office-windows")
 
 
 class SeedBlockedSinceTest(unittest.TestCase):

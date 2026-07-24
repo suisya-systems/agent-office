@@ -35,7 +35,8 @@ from .escalator import Escalator
 from .input import InputReader
 from .notifier import Notifier
 from .reconciler import Reconciler
-from .renderer import TIER_KITTY, TIER_UNICODE, Renderer, detect_caps, format_name
+from .renderer import (TIER_ASCII, TIER_KITTY, TIER_UNICODE, Renderer,
+                       detect_caps, format_name)
 from .screen import Screen
 from .state import OfficeState
 from .subscriber import Subscriber
@@ -350,7 +351,10 @@ class Office:
     def _handle_key(self, name):
         cols, _ = self.screen.size()
         per_row = self.renderer.per_row(cols)
-        if name in ("q",):
+        if name in ("q", "quit"):
+            # "quit" is Ctrl+C/Ctrl+D. On unix the tty raises SIGINT before it
+            # ever reaches us, but Windows hands the character straight over,
+            # so without this branch Ctrl+C would do nothing there.
             self._quit()
         elif name == "escape" and self.show_help:
             self.show_help = False
@@ -456,6 +460,15 @@ def run():
     self_pane = os.environ.get("HERDR_PANE_ID")
     cfg = load_config()
     tier, truecolor = detect_caps(cfg.force_renderer)
+    if cfg.force_renderer in ("unicode", "kitty") and tier == TIER_ASCII:
+        # detect_caps overrode the config because stdout cannot encode the
+        # frame (a cp932 console, typically). Say so rather than leaving the
+        # user wondering why `renderer` did nothing.
+        cfg = dataclasses.replace(
+            cfg, warnings=cfg.warnings
+            + ("renderer=%s needs a UTF-8 stdout (got %s); using ascii"
+               % (cfg.force_renderer,
+                  getattr(sys.stdout, "encoding", None) or "unknown"),))
     if tier == TIER_KITTY:
         # design.md section 5: an explicit renderer="kitty" still falls back to
         # tier 1 *with a warning* when the server says no - which it does by
