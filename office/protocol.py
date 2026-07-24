@@ -319,16 +319,28 @@ def _raise_if_error(obj):
         raise ProtocolError(err.get("code", "error"), err.get("message", ""))
 
 
-def _read_answer(conn, buf, req_id, timeout, skipped=None):
-    """Read lines until one answers `req_id`; stash the rest in `skipped`."""
+def _read_answer(conn, buf, req_id, timeout, skipped=None,
+                 max_skipped=MAX_SKIPPED_LINES):
+    """Read lines until one answers `req_id`; stash the rest in `skipped`.
+
+    `max_skipped` of None leaves the deadline as the only bound. A plain
+    request should never be sent more than its own answer, so a line budget
+    catches a confused server early - but a subscription may legitimately
+    have a burst of events queued in front of its ack, and counting those as
+    strikes would turn a busy reconnect into a reconnect loop.
+    """
     deadline = time.monotonic() + timeout
-    for _ in range(MAX_SKIPPED_LINES + 1):
+    stepped_over = 0
+    while True:
         line = _read_line(conn, buf)
         obj = json.loads(line)
         if _is_answer(obj, req_id):
             return obj
         if skipped is not None:
             skipped.append(line)
+        stepped_over += 1
+        if max_skipped is not None and stepped_over > max_skipped:
+            break
         if time.monotonic() >= deadline:
             break
     raise ProtocolError("no_response",
@@ -370,7 +382,8 @@ def open_subscription(sock_path: str, subscriptions, *,
     early = []
     try:
         conn.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        ack = _read_answer(conn, buf, req_id, timeout, skipped=early)
+        ack = _read_answer(conn, buf, req_id, timeout, skipped=early,
+                           max_skipped=None)
         _raise_if_error(ack)
         result = ack.get("result")
         if not isinstance(result, dict) or result.get("type") != "subscription_started":

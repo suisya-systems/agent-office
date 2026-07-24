@@ -353,6 +353,17 @@ class RequestTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "pane_not_found")
         self.assertEqual(conn.closed, 1)
 
+    def test_a_server_that_never_answers_gives_up(self):
+        """A plain request is only ever sent its own answer, so a stream of
+        anything else is a confused server, not a queue to wait out."""
+        conn = self._serve(FakeConnection(
+            [{"id": "someone-else", "result": {}}]
+            * (protocol.MAX_SKIPPED_LINES + 2)))
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            protocol.request("/s", "pane.list")
+        self.assertEqual(caught.exception.code, "no_response")
+        self.assertEqual(conn.closed, 1)
+
     def test_a_dropped_connection_still_closes(self):
         conn = self._serve(FakeConnection([]))
         with self.assertRaises(ConnectionError):
@@ -436,6 +447,20 @@ class OpenSubscriptionTest(unittest.TestCase):
         with self.assertRaises(protocol.ProtocolError):
             self._open()
         self.assertEqual(conn.closed, 1)
+
+    def test_a_burst_of_events_does_not_hide_the_ack(self):
+        """A reconnect into a busy workspace is exactly when the office most
+        needs to get back on its feet, so queued events must not be counted
+        as strikes against finding the ack."""
+        lines = [{"data": {"type": "pane_created",
+                           "pane": {"pane_id": "w1:p%d" % i}}}
+                 for i in range(protocol.MAX_SKIPPED_LINES + 4)]
+        lines.append({"id": "office-L",
+                      "result": {"type": "subscription_started"}})
+        conn = self._serve(FakeConnection(lines))
+        _got, buf = self._open()
+        self.assertEqual(bytes(buf).count(b"pane_created"), len(lines) - 1)
+        self.assertEqual(conn.closed, 0)
 
     def test_events_that_beat_the_ack_are_kept_for_the_reader(self):
         conn = self._serve(FakeConnection([
