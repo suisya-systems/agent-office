@@ -21,8 +21,8 @@ Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.4 an
 Python 3.10+ on PATH: `python3` on Linux and macOS, `py` (the Python launcher,
 which the python.org installer adds) on Windows.
 
-On Windows the action ids carry a `-windows` suffix — `agent-office.open-windows`
-and `agent-office.jump-blocked-windows` — because herdr requires unique ids and
+On Windows the action ids carry a `-windows` suffix (`agent-office.open-windows`
+and `agent-office.jump-blocked-windows`) because herdr requires unique ids and
 the manifest has to declare a separate entry per platform to name the right
 interpreter. Windows plugin support is in preview in herdr, and kitty graphics
 (tier 2) is unverified there, so leave `renderer` at its default.
@@ -42,11 +42,29 @@ herdr plugin pane open --plugin agent-office --entrypoint office --placement tab
 ```
 
 On Windows the pane id is `office-windows`, for the same reason the action ids
-differ — herdr answers `platform_unsupported` if you ask for the other one:
+differ; herdr answers `platform_unsupported` if you ask for the other one:
 
 ```sh
 herdr plugin pane open --plugin agent-office --entrypoint office-windows --placement tab
 ```
+
+### Recommended: bind a key
+
+`agent-office.open` focuses the office pane if one is already running and opens
+one otherwise, so a single key gets you to the office from anywhere. Add this
+to your herdr config:
+
+```toml
+[[keys.command]]
+key = "prefix+alt+o"
+type = "plugin_action"
+command = "agent-office.open"
+description = "open Agent Office"
+```
+
+On Windows use `agent-office.open-windows`, per the id note above. A second
+global action jumps straight to the longest-blocked agent; see
+[Actions and keybindings](#actions-and-keybindings).
 
 ### Required: enable toast delivery
 
@@ -208,15 +226,18 @@ character: a raised hand and its speech bubble are never covered by a hat.
 
 Two actions are exposed globally and work even when the office pane is not open:
 
-- `agent-office.open` — focus the running office pane, or open one.
+- `agent-office.open` — focus the running office pane, or open one. A
+  suggested binding is in [Quick Start](#recommended-bind-a-key).
 - `agent-office.jump-blocked` — focus the longest-blocked agent's pane.
 
-Bind them to a herdr key so you can jump to a stuck agent from anywhere:
+Bind `jump-blocked` to a herdr key so a stuck agent is one key away:
 
 ```toml
 [[keys.command]]
-key = "prefix+j"
-run = "herdr plugin action invoke agent-office.jump-blocked"
+key = "prefix+alt+j"
+type = "plugin_action"
+command = "agent-office.jump-blocked"
+description = "jump to longest-blocked agent"
 ```
 
 herdr's built-in `open_notification_target` (`prefix+o`) also jumps to the pane
