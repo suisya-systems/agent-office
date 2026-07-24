@@ -21,8 +21,8 @@ Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.4 an
 Python 3.10+ on PATH: `python3` on Linux and macOS, `py` (the Python launcher,
 which the python.org installer adds) on Windows.
 
-On Windows the action ids carry a `-windows` suffix — `agent-office.open-windows`
-and `agent-office.jump-blocked-windows` — because herdr requires unique ids and
+On Windows the action ids carry a `-windows` suffix (`agent-office.open-windows`
+and `agent-office.jump-blocked-windows`) because herdr requires unique ids and
 the manifest has to declare a separate entry per platform to name the right
 interpreter. Windows plugin support is in preview in herdr, and kitty graphics
 (tier 2) is unverified there, so leave `renderer` at its default.
@@ -42,7 +42,7 @@ herdr plugin pane open --plugin agent-office --entrypoint office --placement tab
 ```
 
 On Windows the pane id is `office-windows`, for the same reason the action ids
-differ — herdr answers `platform_unsupported` if you ask for the other one:
+differ; herdr answers `platform_unsupported` if you ask for the other one:
 
 ```sh
 herdr plugin pane open --plugin agent-office --entrypoint office-windows --placement tab
@@ -224,8 +224,7 @@ Two actions are exposed globally and work even when the office pane is not open:
   suggested binding is in [Quick Start](#recommended-bind-a-key).
 - `agent-office.jump-blocked` — focus the longest-blocked agent's pane.
 
-Bind `jump-blocked` to a herdr key so you can reach a stuck agent from
-anywhere:
+Bind `jump-blocked` to a herdr key so a stuck agent is one key away:
 
 ```toml
 [[keys.command]]
