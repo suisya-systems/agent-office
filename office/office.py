@@ -383,7 +383,7 @@ class Office:
             self._overlay_retry_at = self.state.now() + GRAPHICS_RETRY_S
 
     def _adopt_snapshot_focus(self, panes):
-        """Re-learn who holds the focus from an authoritative pane.list (#21).
+        """Learn from a pane.list that the focus is in fact *here* (#21).
 
         pane.focused events are lost while the lifecycle connection is down,
         and _arrived_with_focus reads "another pane is focused" as "the focus
@@ -392,14 +392,22 @@ class Office:
         Subscriber re-snapshots on every (re)connect, which is exactly where
         that loss happens, so the repair rides along with it.
 
-        Only the Subscriber's snapshot is trusted for this. The refresh behind
-        `a` is a socket round-trip old (issue #12) and would happily roll back
-        a pane.focused the loop had already applied - the same reason its
-        statuses are dated with `since_epoch`.
+        **Only ever in that one direction**, which is what makes it safe to
+        take from a snapshot at all. Every pane.list here was fetched off-loop
+        a socket round-trip ago (issue #12) - the Reconciler's 60s sweep feeds
+        this same path - so its `focused` may already have been overtaken by a
+        pane.focused the loop has applied. Believing such a snapshot's *other*
+        pane would undo a real focus gain and take the keyboard away until the
+        next focus change; believing it about ourselves can only ever hand a
+        keypress through, and keys do not reach an unfocused pane anyway. Same
+        fail-open rule as _arrived_with_focus, for the same reason.
         """
+        me = self.state.self_pane_id
+        if not me or self.state.focused_pane_id == me:
+            return
         for pane in panes:
-            if pane.get("focused") and pane.get("pane_id"):
-                self._note_focus(pane["pane_id"])
+            if pane.get("focused") and pane.get("pane_id") == me:
+                self._note_focus(me)
                 return
 
     def _note_focus(self, pane_id):
