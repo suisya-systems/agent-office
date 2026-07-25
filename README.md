@@ -46,8 +46,7 @@ and `agent-office.jump-blocked-windows`) because herdr requires unique ids and
 the manifest has to declare a separate entry per platform to name the right
 interpreter. Windows plugin support is in preview in herdr.
 
-**Install (marketplace publication pending):** once published under the
-`herdr-plugin` topic, install directly from GitHub:
+**Install** directly from GitHub:
 
 ```sh
 herdr plugin install suisya-systems/agent-office
