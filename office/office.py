@@ -405,13 +405,21 @@ class Office:
         next focus change; believing it about ourselves can only ever hand a
         keypress through, and keys do not reach an unfocused pane anyway. Same
         fail-open rule as _arrived_with_focus, for the same reason.
+
+        This corrects the *belief* and nothing else - no window is armed. A
+        snapshot is not a focus arrival: the gain it reports is of unknown age,
+        and any key that came with it was read from stdin and dealt with long
+        before this pane.list came home. Arming here could therefore only cost
+        a keypress the user aimed at an office they have been looking at for
+        some time.
         """
         me = self.state.self_pane_id
         if not me or self.state.focused_pane_id == me:
             return
         for pane in panes:
             if pane.get("focused") and pane.get("pane_id") == me:
-                self._note_focus(me)
+                self._unfocused_key_at = None
+                self.state.set_focused(me)
                 return
 
     def _note_focus(self, pane_id):

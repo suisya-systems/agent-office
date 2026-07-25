@@ -664,7 +664,10 @@ class ArrivalKeyTest(unittest.TestCase):
             {"pane_id": "self-pane", "focused": True},
         ]))
         self.assertEqual(office.state.focused_pane_id, "self-pane")
-        self.clock[0] += office_mod.FOCUS_GRACE_S
+        # And with no window: a snapshot is not an arrival. The gain it reports
+        # is of unknown age and any key that came with it was read from stdin
+        # long before this pane.list came home, so arming one here could only
+        # cost a key the user aimed at an office they have been looking at.
         office._handle(("key", "enter"))
         self.assertEqual(office.commander.focused, ["p1"])
 
