@@ -584,6 +584,35 @@ class ArrivalKeyTest(unittest.TestCase):
         office._handle(("key", "enter"))
         self.assertEqual(office.commander.focused, [])
 
+    def test_a_focus_event_that_never_comes_gives_the_keyboard_back(self):
+        # "the event is right behind" and "the event is never coming" look the
+        # same from here, and the lifecycle connection can be down for minutes.
+        # Waiting one window out is worth it; waiting forever would let an
+        # outage make a focused office unusable, `q` and all.
+        office = self.office(focused="p1")
+        office._handle(("key", "enter"))               # spends the window
+        self.assertEqual(office.commander.focused, [])
+        self.clock[0] += office_mod.FOCUS_GRACE_S
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, ["p1"])
+
+    def test_a_burst_ahead_of_the_event_is_dropped_whole(self):
+        office = self.office(focused="p1")
+        for _ in range(3):
+            self.clock[0] += 0.05                      # inside the window
+            office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, [])
+
+    def test_the_next_focus_move_hands_back_a_fresh_window(self):
+        # The window is spent per belief, not once per run: each focus move the
+        # office does see is another chance for a key to overtake its event.
+        office = self.office(focused="p1")
+        office._handle(("key", "enter"))               # spends it
+        self.clock[0] += 60.0
+        office._handle(("focused", "p2"))              # the user moved again
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, [])
+
     def test_holding_the_focus_all_along_leaves_the_keys_alone(self):
         # No focus gain, no window: a user sitting in the office keeps their
         # keyboard even though pane.focused replays on every reconnect.

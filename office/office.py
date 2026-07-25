@@ -152,6 +152,10 @@ class Office:
         # working: the gate must fail open, or a missed pane.focused event would
         # take the keyboard away rather than one stray keypress.
         self._focus_grace_until = 0.0
+        # When the first key was handled while the office believed some other
+        # pane held the focus, or None once that belief has moved. Bounds the
+        # second half of _arrived_with_focus to one window's worth of keys.
+        self._unfocused_key_at = None
 
     # -- main loop ------------------------------------------------------
 
@@ -420,6 +424,8 @@ class Office:
         """
         me = self.state.self_pane_id
         gained = bool(me) and pane_id == me and self.state.focused_pane_id != me
+        if pane_id != self.state.focused_pane_id:
+            self._unfocused_key_at = None      # a fresh belief, a fresh window
         self.state.set_focused(pane_id)
         if gained:
             self._focus_grace_until = self.state.now() + FOCUS_GRACE_S
@@ -430,22 +436,35 @@ class Office:
         Two ways to tell, because the keystroke and the pane.focused event
         reach the loop down different threads and either can win the race:
 
+          * the focus event arrived first, and less than FOCUS_GRACE_S ago.
           * the office still believes another pane is focused. It cannot be
             reading that pane's keyboard, so the focus has in fact moved and
             the event simply has not caught up with the key it brought along.
-          * the focus event did arrive first, and less than FOCUS_GRACE_S ago.
 
-        Both fall back to "the user meant it" when the answer is not known -
-        no self_pane_id (HERDR_PANE_ID unset) or no focus seen yet - so the
-        worst case of a blind spot is the old behaviour for one keypress,
-        never a pane that has stopped listening to its keyboard.
+        The second is bounded to one FOCUS_GRACE_S from the first such key,
+        because "the event is right behind" and "the event is never coming"
+        look identical from here and only the first is worth waiting out. Left
+        unbounded it would hand an outage the power to make a focused office
+        unusable: the lifecycle connection can be down for minutes, and a focus
+        move it slept through would drop every key until it came back - `q`
+        included, so the pane could not even be closed. A bound of one window
+        costs the same quarter-second either way.
+
+        Everything falls back to "the user meant it" when the answer is not
+        known - no self_pane_id (HERDR_PANE_ID unset), no focus seen yet, or the
+        window spent - so the worst case of a blind spot is the old behaviour
+        for one keypress, never a pane that has stopped listening.
         """
         me = self.state.self_pane_id
         if not me:
             return False
         focused = self.state.focused_pane_id
         if focused is not None and focused != me:
-            return True
+            now = self.state.now()
+            if self._unfocused_key_at is None:
+                self._unfocused_key_at = now
+                return True
+            return now < self._unfocused_key_at + FOCUS_GRACE_S
         return self.state.now() < self._focus_grace_until
 
     def _handle_key(self, name):
