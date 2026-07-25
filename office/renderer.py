@@ -26,13 +26,19 @@ drawing is deferred. Layout groups desks into islands (workspaces), wraps to
 the terminal width, and scrolls vertically to keep the selection visible. When
 the terminal is too small for even one row of desks, it drops to a compact
 one-line-per-desk summary.
+
+**Widths are display columns, never character counts** (issue #25). Every line
+here is composed the same way: measure and cut the *visible* text with
+`office.textwidth`, then colour what survived - see `_fit`. Doing it the other
+way round is what used to let a Japanese nameplate draw twice as wide as it
+counted, and what made the compact row guess at ANSI overhead.
 """
 
 import codecs
 import os
 import sys
 
-from . import sprites, themes
+from . import sprites, textwidth, themes
 
 RESET = "\x1b[0m"
 DIM = "\x1b[2m"
@@ -59,6 +65,13 @@ KEY_HINT = "? help | Enter jump | b blocked | q quit"
 KEY_HINT_SHORT = "? help"
 
 TIER_ASCII, TIER_UNICODE, TIER_KITTY = 0, 1, 2
+
+# Nameplate rows per desk (issue #25). 1 is the historical layout. 2 doubles
+# what a Japanese title can say - a 16-column plate holds only eight full-width
+# characters - at the cost of one row per desk, so fewer desks fit vertically.
+# The cap lives here rather than in config.py because it is a layout fact, and
+# config.py imports it so the validated range and the drawn range cannot drift.
+PLATE_LINES_MIN, PLATE_LINES_MAX = 1, 2
 
 
 def is_utf8_encoding(name):
@@ -117,13 +130,6 @@ def format_name(name, template="{name}"):
     if template == "{name:last-segment}":
         name = name.rstrip("/").split("/")[-1]
     return name
-
-
-def _center(text, width):
-    text = text[:width]
-    pad = width - len(text)
-    left = pad // 2
-    return " " * left + text + " " * (pad - left)
 
 
 # ------------------------------------------------------- desk art strategies
@@ -220,7 +226,8 @@ class _Look:
 
 class Renderer:
     def __init__(self, tier=TIER_UNICODE, truecolor=True,
-                 name_template="{name}", theme=themes.DEFAULT_NAME):
+                 name_template="{name}", theme=themes.DEFAULT_NAME,
+                 plate_lines=1):
         self.tier = tier
         self.truecolor = truecolor
         self.name_template = name_template
@@ -228,8 +235,22 @@ class Renderer:
         self.art = _ART_BY_TIER.get(tier, _HalfBlockArt)(self.theme, truecolor)
         self.desk_w = self.art.desk_w
         self.art_rows = self.art.art_rows
+        # How many rows the nameplate gets. Clamped to the same range config.py
+        # validates against, and soft on rubbish: the renderer is reached from
+        # the config file, and a bad value there has never been allowed to stop
+        # the office from opening (design.md section 8).
+        try:
+            self.plate_lines = max(PLATE_LINES_MIN,
+                                   min(PLATE_LINES_MAX, int(plate_lines)))
+        except (TypeError, ValueError):
+            self.plate_lines = PLATE_LINES_MIN
         self.block_w = self.desk_w + 2          # +1 border each side
-        self.block_h = self.art_rows + 4        # top + art + name + status + bottom
+        # top + art + nameplate(s) + status + bottom. The nameplate is the only
+        # variable part, and it has to be in here rather than assumed to be one
+        # row: block_h is what row assembly indexes with and what scroll-to-
+        # selection measures a desk by, so an understated height would drop the
+        # second plate row and scroll to the wrong place.
+        self.block_h = self.art_rows + 3 + self.plate_lines
         ui = self.theme.ui
         self.accent = sprites.fg(ui["accent"], truecolor)
         self.alert = sprites.fg(ui["alert"], truecolor)
@@ -243,6 +264,36 @@ class Renderer:
         # state the renderer itself consults.
         self.sprite_boxes = []
 
+    # -- composition ----------------------------------------------------
+
+    def _fit(self, segments, budget):
+        """Join `(colour, text)` segments into a line at most `budget` columns.
+
+        The one place colour meets width. Each segment's *visible* text is cut
+        against what is left of the shared budget and only then wrapped in its
+        escape sequence, so no measurement ever sees an escape and no escape is
+        ever cut in half. Segments are consumed left to right, which makes the
+        earlier ones the ones that survive a narrow pane - deliberate: the
+        status word and the room matter more than the tail of a long name.
+
+        Once a non-empty segment has nothing left to spend, the rest are
+        dropped rather than skipped over: the result is always an unbroken
+        left prefix of the intended row, so a later short field can never jump
+        the queue in front of a longer one that was cut.
+        """
+        out = []
+        for color, text in segments:
+            if not text:                          # nothing to say, not a stop
+                continue
+            if budget <= 0:
+                break
+            piece, used = textwidth.cut(text, budget)
+            if not piece:
+                break
+            budget -= used
+            out.append(color + piece + RESET if color else piece)
+        return "".join(out)
+
     # -- public ---------------------------------------------------------
 
     def per_row(self, cols):
@@ -251,6 +302,10 @@ class Renderer:
 
     def render(self, state, cols, rows, frame=0, muted=False, show_help=False,
                escalated=(), status="", show_hint=False):
+        # Below these the frame is not made to fit - it is composed at 20x6 and
+        # left to the terminal. Nothing legible survives a pane that small, and
+        # a floor keeps every division below out of the degenerate cases. The
+        # "no line exceeds cols" guarantee therefore holds for cols >= 20 only.
         cols = max(20, cols)
         rows = max(6, rows)
         escalated = frozenset(escalated)
@@ -278,12 +333,12 @@ class Renderer:
         pane degrades to KEY_HINT_SHORT and then to nothing, rather than being
         cut mid-word - dropping a decorative hint beats corrupting the row."""
         if status:
-            return status[:cols]
+            return textwidth.truncate(status, cols)
         if not show_hint:
             return ""
-        if len(KEY_HINT) <= cols:
+        if textwidth.width(KEY_HINT) <= cols:
             return KEY_HINT
-        if len(KEY_HINT_SHORT) <= cols:
+        if textwidth.width(KEY_HINT_SHORT) <= cols:
             return KEY_HINT_SHORT
         return ""
 
@@ -300,7 +355,18 @@ class Renderer:
         out.append("\x1b[J")                      # clear below
         return "".join(out)
 
-    def _header(self, state, cols, muted):
+    def _header(self, state, cols, muted, hint=""):
+        """The top line, including any scroll hint.
+
+        The hint is composed *here* rather than appended by the caller: the two
+        share one line and therefore one width budget, and appending after the
+        header had already been cut to `cols` overran the pane by the length of
+        the hint - with plain ASCII, every time the office scrolled.
+
+        It is also all-or-nothing, the same rule `_status_line` applies to the
+        key hint. Half of "(scroll: 41-68 of 300)" is not a smaller readout,
+        it is a wrong one, so a hint that does not fit is dropped entirely.
+        """
         n = len(state.desks)
         blocked = len(state.blocked_desks())
         bits = ["AGENT OFFICE", "filter:%s" % state.filter_mode,
@@ -309,8 +375,11 @@ class Renderer:
             bits.append("%d blocked" % blocked)
         if muted:
             bits.append("muted")
-        text = "  ".join(bits)
-        return self.accent + BOLD + text[:cols] + RESET
+        body = "  ".join(bits)
+        if hint and textwidth.width(body) + textwidth.width(hint) > cols:
+            hint = ""
+        return self._fit([(self.accent + BOLD, body),
+                          (self.accent, hint)], cols)
 
     # -- full layout ----------------------------------------------------
 
@@ -337,7 +406,7 @@ class Renderer:
         boxes = []                                # (body_row, col, pixel_rows)
         for wid, label, desks in state.islands():
             room = format_name(label, self.name_template)
-            body.append(DIM + ("[ %s ]" % room)[:cols] + RESET)
+            body.append(self._fit([(DIM, "[ %s ]" % room)], cols))
             for start in range(0, len(desks), per_row):
                 chunk = desks[start:start + per_row]
                 block_lines = []
@@ -391,13 +460,12 @@ class Renderer:
                 offset = min(len(body) - avail, sel - (avail - self.block_h) + 1)
             offset = max(0, offset)
         window = body[offset:offset + avail]
-        header = self._header(state, cols, muted)
+        hint = ""
         if len(body) > avail:
             hint = "  (scroll: %d-%d of %d)" % (offset + 1,
                                                 min(offset + avail, len(body)),
                                                 len(body))
-            header = header + self.accent + hint + RESET
-        return [header] + window, offset
+        return [self._header(state, cols, muted, hint)] + window, offset
 
     def _desk_block(self, desk, look):
         art = self.art.lines(look.visual, look.phase, desk.agent, look.focused)
@@ -414,8 +482,13 @@ class Renderer:
             side = " "
 
         name = format_name(desk.display_name, self.name_template)
-        plate = (self.accent if look.selected else BOLD) + _center(
-            name, self.desk_w) + RESET
+        plate_color = self.accent if look.selected else BOLD
+        # Always exactly self.plate_lines rows, blank ones included: the block
+        # is assembled by index against block_h, so a short name must still
+        # take up its full height or the desks below it shift up by a row.
+        plate = [plate_color + textwidth.center(part, self.desk_w) + RESET
+                 for part in textwidth.wrap(name, self.desk_w,
+                                            self.plate_lines)]
         stat_txt = look.label
         word = desk.state_label_word
         if desk.status == "blocked":
@@ -423,12 +496,13 @@ class Renderer:
             stat_txt = ("%s %s" % (mark, word)) if word else ("%s %s"
                                                               % (mark,
                                                                  look.label))
-        stat = look.color + _center(stat_txt, self.desk_w) + RESET
+        stat = look.color + textwidth.center(stat_txt, self.desk_w) + RESET
 
         lines = [hbar]
         for row in art:
             lines.append(side + row + side)
-        lines.append(side + plate + side)
+        for row in plate:
+            lines.append(side + row + side)
         lines.append(side + stat + side)
         lines.append(bbar)
         return lines
@@ -446,19 +520,26 @@ class Renderer:
             color = self._status_color[color_key]
             if desk.status == "blocked" and desk.pane_id in escalated:
                 label, color = "blocked!!", self.alert
-            sel = (self.accent + ">" + RESET
-                   if desk.pane_id == state.selected_pane_id else " ")
+            selected = desk.pane_id == state.selected_pane_id
             foc = "*" if desk.pane_id == state.focused_pane_id else " "
-            dot = color + ("●" if self.tier else "*") + RESET
             name = format_name(desk.display_name, self.name_template)
             room = format_name(state.room_label(desk.workspace_id),
                                self.name_template)
-            text = "%s %s %s %-10s %s/%s" % (sel, dot, foc,
-                                             label[:10], room[:14], name)
-            body.append(text[:cols + 40])         # allow ANSI overhead
-        header = self.accent + BOLD + (
-            "AGENT OFFICE (compact)  %d desks  %d blocked"
-            % (len(order), len(state.blocked_desks())))[:cols] + RESET
+            # Segments, not one formatted string: the cursor and the status dot
+            # carry colour, so the row has to be measured before it is painted.
+            # The fixed-width fields are cut to columns for the same reason
+            # `%-10s` and `[:14]` no longer are - a CJK room label counted half
+            # of what it drew and pushed the name off the pane.
+            body.append(self._fit([
+                (self.accent if selected else "", ">" if selected else " "),
+                ("", " "),
+                (color, "●" if self.tier else "*"),
+                ("", " %s %s %s/%s" % (foc, textwidth.pad(label, 10),
+                                       textwidth.truncate(room, 14), name)),
+            ], cols))
+        header = self._fit(
+            [(self.accent + BOLD, "AGENT OFFICE (compact)  %d desks  %d blocked"
+              % (len(order), len(state.blocked_desks())))], cols)
         avail = rows - 1
         offset = 0
         sel_idx = anchors.get(state.selected_pane_id)
@@ -479,9 +560,12 @@ class Renderer:
             ("?", "toggle this help"),
             ("q", "close the office pane"),
         ]
-        lines = [self.accent + BOLD + "AGENT OFFICE - keys" + RESET, ""]
+        lines = [self._fit([(self.accent + BOLD, "AGENT OFFICE - keys")], cols),
+                 ""]
         for key, desc in keys:
-            lines.append("  " + BOLD + ("%-16s" % key) + RESET + desc)
+            lines.append(self._fit([("", "  "),
+                                    (BOLD, textwidth.pad(key, 16)),
+                                    ("", desc)], cols))
         lines.append("")
-        lines.append(DIM + "press ? to return" + RESET)
+        lines.append(self._fit([(DIM, "press ? to return")], cols))
         return lines

@@ -97,6 +97,7 @@ renderer = "auto"            # "auto" | "unicode" (tier 1) | "ascii" (tier 0) | 
 fps = 2                      # animation ticks per second, 1..10
 theme = "default"            # "default" | "midnight" | "daylight"
 name_template = "{name}"     # "{name}" | "{name:last-segment}"
+plate_lines = 1              # nameplate rows per desk, 1 | 2
 
 [escalation]
 blocked_threshold_s = 90     # blocked for this long -> toast
@@ -122,6 +123,16 @@ status line.
 **`name_template`** shortens long names on desk nameplates and room labels.
 `"{name:last-segment}"` keeps only the part after the last `/`, which turns a
 label like `claude-org/8f3a…/g7/project:agent-office/a2` into `a2`.
+
+**`plate_lines`** gives the desk nameplate a second row. Everything is laid out
+by terminal display width, so a full-width (CJK) character takes the two
+columns it actually draws and the plate is cut on a character boundary rather
+than half way through one — which means the 16-column plate of the `unicode`
+and `kitty` renderers holds only eight Japanese characters (the `ascii`
+renderer's plate is 9 columns, so four). `plate_lines = 2` wraps the name onto
+a second row for another plateful, at the cost of one row per desk (fewer desks
+fit vertically). The default of `1` leaves existing layouts exactly as they
+were.
 
 **`theme`** repaints the office. `default` is the original look; `midnight` is
 a darker, neon-lit room; `daylight` is a bright one. Themes colour the sprites

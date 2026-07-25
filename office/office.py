@@ -67,7 +67,8 @@ class Office:
                                  exclude_agents=self.config.exclude_agents)
         self.renderer = Renderer(tier=tier, truecolor=truecolor,
                                  name_template=self.config.name_template,
-                                 theme=self.config.theme)
+                                 theme=self.config.theme,
+                                 plate_lines=self.config.plate_lines)
         # tier 2 only, and only once run() has confirmed the pane can take
         # graphics at all - see graphics.probe and design.md section 5.
         self.graphics = (graphics.GraphicsSender(sock_path, self.q,
