@@ -16,7 +16,7 @@ The rules here are the terminal's, not Python's:
     when the base alone is one - `warning sign` U+26A0 draws in one cell, and
     U+26A0 U+FE0F draws in two. Measuring per code point gets this wrong in
     the one direction that matters, so text is measured in *units*: a base
-    character plus everything bound to it (see `_units`).
+    character plus everything bound to it (see `units`).
 
 `A` (ambiguous) is deliberately treated as one column. It is genuinely
 terminal- and font-dependent, and one column is what a terminal in a UTF-8
@@ -67,12 +67,19 @@ def char_width(ch):
 
 
 def _binds_to_previous(ch):
-    """True for a character that belongs to the cluster before it."""
+    """True for a character that belongs to the cluster before it.
+
+    Control characters are zero-width but bind to nothing: a newline is a
+    boundary, not an accent, and a cluster that swallowed one could not be
+    replaced or cut without taking the line break with it.
+    """
+    if unicodedata.category(ch) == "Cc":
+        return False
     return (char_width(ch) == 0
             or _MODIFIER_FIRST <= ord(ch) <= _MODIFIER_LAST)
 
 
-def _units(text):
+def units(text):
     """Yield `(chunk, columns)` - one cluster at a time, never splittable.
 
     A chunk is a base character plus every character bound to it: combining
@@ -104,7 +111,7 @@ def _units(text):
 
 def width(text):
     """Columns occupied by `text` when the terminal draws it."""
-    return sum(cols for _chunk, cols in _units(text))
+    return sum(cols for _chunk, cols in units(text))
 
 
 def cut(text, limit):
@@ -118,7 +125,7 @@ def cut(text, limit):
         return "", 0
     used = 0
     out = []
-    for chunk, cols in _units(text):
+    for chunk, cols in units(text):
         if cols and used + cols > limit:
             break
         used += cols
