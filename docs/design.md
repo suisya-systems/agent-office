@@ -3,7 +3,10 @@
 汎用 herdr プラグイン。エージェントフリートを**ピクセルアートのオフィス**として 1 ペインに描画する。各エージェント（= herdr ペイン）は机に座るキャラクターになり、状態（idle / working / blocked / done）に応じてアニメーションする。blocked のキャラは挙手して吹き出しを出し、長時間 blocked はトースト + サウンドにエスカレートする。挙手中の机へワンアクションでフォーカスジャンプできる。
 
 - ステータス: Stage 1（設計）。実装は本文書の人間レビュー後に別タスク。
-- 前提調査: [research-herdr-plugin-authoring.md](research-herdr-plugin-authoring.md)（herdr 0.7.4 実測に基づく。以下「調査ノート」）
+- 前提調査: [research-herdr-plugin-authoring.md](research-herdr-plugin-authoring.md)（以下「調査ノート」）
+  - **本設計文書の本文は herdr 0.7.4（protocol 16）実測を前提に書かれている。** 調査ノートは 0.7.5（protocol 17）
+    で再実測済みで、いくつかの前提が無効化された。該当箇所には **[0.7.5 注記]** を付けて事実と参照先を示している。
+    注記は事実の指摘のみで、**設計の再決定は行っていない**（特に §9 の placement は別途議論中でオーナー判断待ち）。経緯は Issue #38。
 - キャラ状態遷移とスプライト仕様: [character-states.md](character-states.md)
 - レンダリングモック: [`mock/office_mock.py`](../mock/office_mock.py)
 
@@ -80,6 +83,13 @@
 
 再接続: サーバー再起動等で接続が切れたら指数バックオフで全接続を張り直し、`pane.list` で再同期。office ペイン自身は `[[startup]]` フックではなく通常ペインとして herdr セッションに残るため、セッション復元後も自動で復帰する。
 
+> **[0.7.5 注記] 上記の「セッション復元後も自動で復帰する」は誤りである。** 0.7.5 実測では、サーバー再起動時に
+> プラグイン所有ペインの**枠（label / cwd / タブ位置）は復元されるが、マニフェストの `command` は再実行されない**
+> （復元されたペインには既定シェルが入る。`pane.process_info` で確認）。つまり再起動後に残るのは
+> 「Agent Office というラベルの付いた素のシェル」であり、office プロセスは動いていない。
+> 0.7.5 で追加された `[[startup]]` フックはまさにこの穴を埋める機構で、フック内から `plugin.pane.open` が
+> 成功することも実測済み。詳細は調査ノート §2、対応方針は Issue #38（本タスクでは設計を再決定しない）。
+
 **実装時検証事項**: `pane.updated`（ブロードキャスト、pane_id 不要）が agent_status 変化でも発火するなら、接続 S を廃止して L だけの単純構成にできる可能性がある。Stage 2 冒頭で実測し、発火するなら簡素化する（本設計は発火しない前提でも成立する保守的構成）。
 
 ## 4. 状態モデル（OfficeState）
@@ -121,7 +131,7 @@ Desk
 判定ロジック（起動時に 1 回 + 設定で強制上書き可）:
 1. 設定 `renderer` が明示されていればそれに従う（`kitty` 指定でも `pane.graphics.info` が**成功しなければ** tier 1 へ**警告付き**フォールバック）。
 2. 自動判定: tier 2 は**選ばない**（既定は tier 1。kitty は実験的機能のため opt-in のみ）。`LANG`/`LC_*` が UTF-8 かつ `TERM != dumb` → tier 1。それ以外 → tier 0。色数は `COLORTERM=truecolor` → 24bit、なければ 256 色パレットに量子化。
-3. tier 2 有効時も、レイアウト計算・ネームプレート・凡例はテキストセルで描き、スプライト部分だけ graphics に置く（`pane.graphics.stream` は 0.7.4 に無いため全面画像アニメは行わない。将来 stream が来たら差し替え可能なよう Renderer を interface 化）。
+3. tier 2 有効時も、レイアウト計算・ネームプレート・凡例はテキストセルで描き、スプライト部分だけ graphics に置く（`pane.graphics.stream` は 0.7.4 に無いため全面画像アニメは行わない。将来 stream が来たら差し替え可能なよう Renderer を interface 化）。**[0.7.5 注記] `pane.graphics.stream` は 0.7.5 でも存在しない**（スキーマは `set`/`clear`/`info` の 3 つのみ、`info` は変わらず `feature_disabled`）。0.7.5 リリースノートの "Pane graphics streams now shut down cleanly..." は内部修正であり公開 API の追加ではないため、**この前提は据え置きで正しい**（調査ノート §4 で再確認済み）。
 
 **tier 2 の判定条件（Stage 2 実測により精緻化）**: 当初は「`pane.graphics.info` が `feature_disabled` を返さない場合」としていたが、実測で 2 種類の拒否コードを確認したため「**`info` が成功した場合のみ**」に改めた。
 
@@ -133,6 +143,13 @@ Desk
 重要な実測事実: `cell_size_unavailable` の状態でも **`pane.graphics.set` は `{"type":"ok"}` を返す**。つまり `set` の成功は「画面に出た」ことの証拠にならず、可否判定に使えるのは `info` だけである。
 
 **tier 2 は加算的（additive）に実装する**: tier 1 のフレームを完全に描いた上に画像を重ねる。外側端末が kitty graphics を解さない場合（herdr からは検知不能）でも、ユーザーには動作する tier 1 オフィスが残り、空白にはならない。
+
+> **[0.7.5 注記] 本節の tier は「office ペインの中をどう描くか」の選択肢であり、0.7.5 では
+> office ペインの外に出せる描画面が増えた。** `pane.report_metadata` の `tokens` が
+> herdr の sidebar（expanded Agent / Space 行）に描画されるようになり、sidebar はタブを跨いで常時見える。
+> ただし表示位置と装飾はユーザーの `[ui.sidebar.*] rows` 設定側にあり、プラグインからは値しか送れない
+> （調査ノート §10 に実測仕様）。この面を使うかどうかは §9 placement と同じ議論に属するため、
+> ここでは選択肢の存在を記録するだけに留める。Issue #38。
 
 共通事項:
 - フレームは全画面再構成 + カーソルホーム書き換え（差分描画は Stage 2 で必要なら導入）。alternate screen + カーソル非表示。SIGWINCH（Windows ではリサイズポーリング）で再レイアウト。
@@ -179,6 +196,13 @@ command = ["<runtime>", "office", "action-jump-blocked"]
 ```
 - `jump-blocked` は office ペインが**起動していなくても**動く単発コマンドとして実装する: `pane.list` → `agent_status == blocked` のうち起動が最古のペインへ `pane.focus`（blocked_since は単発コマンドでは分からないため pane_id 順のタイブレーク。office 稼働中は state ファイル（`HERDR_PLUGIN_STATE_DIR/state.json`、後述）を参照して正確な最古を選ぶ）。
 - ユーザーは herdr のキーバインド（`[[keys.command]]` で `herdr plugin action invoke agent-office.jump-blocked`）に割り当てられる。README に設定例を載せる。
+
+> **[0.7.5 注記] herdr 側に順序決定の機構が生えた。** 0.7.5 の `agent.view.set`（`filter` + `sort`）は
+> sidebar の表示内容と **agent キーバインド（`[keys] focus_agent`）のジャンプ順**を再定義する。実測では
+> `sort: [{field:"attention"}]` 等を張ると `alt+1` の飛び先が変わり、`filter` で絞ると対象から外れたペインには飛べない。
+> これは本節の `jump-blocked`（最古 blocked へ飛ぶ）および `office/layout.py` のカーソル順と**機能が重なる**。
+> 一方で `agent.view` はグローバル 1 枠・last-writer-wins・読み戻し API 無し・サーバー再起動で消える
+> （調査ノート §9）ため、単純な置き換えにはならない。どう扱うかは設計判断として保留。Issue #38。
 
 ### トーストからの遷移
 herdr のトーストはクリックアクションを持たないため、「トーストで気づく → キーバインド or office ペインでジャンプ」が導線。README で `open_notification_target`（herdr 組込み、prefix+o）too が blocked ペインに飛べることを案内する。
@@ -230,6 +254,16 @@ exclude_agents = []          # agent 名で除外 (例 ["codex"])
 
 ## 9. 配布形態
 
+> **[0.7.5 注記] 本節の前提のうち 3 点が 0.7.5 で変わった。事実のみ記す（設計の再決定はしない。Issue #38）。**
+> 1. **placement の議論の土台が変わった**: 本節が `placement = "tab"` を既定にした理由付けの一部（および
+>    「office ペインは herdr に戻してもらえないので置き場所を人が決めて常駐させる」という前提）は、
+>    `[[startup]]` の登場と「復元ではペインの枠だけ戻りコマンドは再実行されない」実測により再検討の対象になる
+>    （§3 の注記を参照）。**placement 自体は別途議論中でオーナー判断待ちのため、ここでは変更しない。**
+> 2. **プラグインの install / link はユーザーグローバルになった**（セッション隔離ではない）。
+>    「このセッションだけ別バージョンで動かす」はできず、開発中の link は本番セッションにも効く（調査ノート §7）。
+> 3. **`min_herdr_version` は必須項目になった**（0.7.5 では欠落マニフェストの link が拒否される）。
+>    本リポジトリの `herdr-plugin.toml` は宣言済みなので現状は影響なし。
+
 - **リポジトリ**: 独立 GitHub リポジトリ（例 `agent-office`）、topic **`herdr-plugin`** を付与しマーケットプレイス掲載（調査ノート §7）。ライセンス MIT。
 - **インストール**: `herdr plugin install <owner>/agent-office`。ランタイム依存を増やさないため `[[build]]` は空にする方針（§12 の言語選択に依存）。開発は `herdr plugin link`。
 - **マニフェスト骨子**:
@@ -252,7 +286,7 @@ command = ["<runtime>", "office"]
 ```
 
 - `placement = "tab"` を既定とする（オフィスは横長レイアウトのため split より tab/zoomed が向く。ユーザーは `plugin.pane.open` の placement 上書きで split にもできる）。
-- バージョニング: semver。`min_herdr_version` は依存 API（events.subscribe の per-pane 購読、plugin.*）が揃う 0.7.4。tier 2 が `pane.graphics.stream` に依存する時点で引き上げ。
+- バージョニング: semver。`min_herdr_version` は依存 API（events.subscribe の per-pane 購読、plugin.*）が揃う 0.7.4。tier 2 が `pane.graphics.stream` に依存する時点で引き上げ（**[0.7.5 注記]** `stream` は 0.7.5 でも未提供なので引き上げ条件は未達）。
 - Windows: named pipe 接続と ANSI 出力（Windows Terminal は対応）に依存。cp932 コンソールを考慮し、**CLI の `--help` や print は ASCII のみ**、tier 判定で非 UTF-8 なら tier 0。
   - tier 判定の材料は `LANG` だけでは足りない。Windows はロケール変数を設定しないため、`LANG` 未設定時は `sys.stdout.encoding` を見る。逆に encoder が UTF-8 でないと判明した場合は `renderer` 設定より優先して tier 0 に落とす（cp932 では半ブロックが encode できず、フレームの途中で `UnicodeEncodeError` になるため）。
   - tier 0 でも安全ではない。ペインラベルやエージェント名は herdr 由来で任意の文字を含みうるので、`Screen._write` に `errors="replace"` のフォールバックを置く。1 文字が化けるのは、alternate screen 上にトレースバックを吐いてフレームごと壊すよりましである。
@@ -267,6 +301,11 @@ command = ["<runtime>", "office"]
 - **島 = workspace** の対応により、claude-org の「1 ワーカー = 1 workspace」運用ではワーカーごとに部屋が分かれて見える。
 - blocked エスカレーションは、claude-org の窓口（人間）が席を外している時の「ワーカーが承認待ちで止まっている」検知にそのまま使える。
 - 将来 claude-org 側がタスク ID 等を出したければ `pane.report_metadata --token`（汎用 key-value、実測で PaneInfo.tokens に載る）を使い、Office は `name_template` にトークン参照（`{token:task_id}` 等）を足すだけで対応できる（Stage 2 以降の拡張）。
+  - **[0.7.5 注記] `tokens` は Office の外でも見えるようになった。** 0.7.5 では herdr の sidebar
+    （expanded Agent / Space 行）に token 値が描画される。ただし表示するかどうかと装飾は**ユーザーの
+    `[ui.sidebar.agents] rows` / `[ui.sidebar.spaces] rows` 設定**で決まり（`$task_id` のように `$` 前置で参照、
+    `fg` は `#RRGGBB` のみ、`bold` / `dim` は真偽値）、プラグイン側から装飾や表示を強制する手段は無い。
+    つまり claude-org が token を出せば、Office を経由せず herdr の sidebar にも出せる（調査ノート §10）。
 
 ## 11. 先行プロダクト比較と差別化
 
@@ -319,8 +358,10 @@ command = ["<runtime>", "office"]
 | 3 | 大規模フリート（50+ ペイン）での接続 S 張り直しコスト | パフォーマンス | デバウンス済み。実測して問題なら購読を island 単位に分割 |
 | 4 | `ui.toast.delivery` 既定 off による「通知が来ない」問い合わせ | UX | README Quick Start + 初回起動時に delivery=off を検出したら画面内に 1 行警告 |
 | 5 | 端末リサイズ・小画面での可読性 | UX | 縮小表現（§5）。モックで最小 80x24 を確認 |
-| 6 | `pane.graphics.stream` 未提供（0.7.4） | tier 2 のアニメ | tier 2 は静止スプライト + テキスト合成に限定。stream 提供後に拡張 |
+| 6 | `pane.graphics.stream` 未提供（0.7.4 / **0.7.5 も未提供** — 調査ノート §4 で再確認） | tier 2 のアニメ | tier 2 は静止スプライト + テキスト合成に限定。stream 提供後に拡張 |
 | 7 | done の直接 report 不可（`pane.report_agent` に done が無い） | 外部 report 組織での done 表現 | herdr 検出に委ねる。設計変更不要（表示は enum 準拠） |
+| 8 | **[0.7.5]** サーバー再起動でペインの枠は戻るが office プロセスは再実行されない | 再起動後に「ラベルだけの素のシェル」が残る | 事実として記録。対応（`[[startup]]` の採用可否）は未決定 — §3 注記 / Issue #38 |
+| 9 | **[0.7.5]** `agent.view` の順序決定が `jump-blocked` / カーソル順と機能重複 | 役割分担が未定 | 事実として記録。§6 注記 / Issue #38。グローバル 1 枠・奪取検知不可のため単純置換はできない |
 
 ## 14. Stage 2 への分割案（参考）
 
