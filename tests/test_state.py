@@ -251,17 +251,13 @@ class SelectionTest(unittest.TestCase):
     def test_first_desk_auto_selected(self):
         self.assertEqual(self.s.selected_pane_id, "w1:p0")
 
-    def test_move_selection_grid(self):
-        self.s.move_selection(1, 0, per_row=3)            # -> p1
-        self.assertEqual(self.s.selected_pane_id, "w1:p1")
-        self.s.move_selection(0, 1, per_row=3)            # down a row -> p4
-        self.assertEqual(self.s.selected_pane_id, "w1:p4")
-        self.s.move_selection(0, 1, per_row=3)            # clamp at end
-        self.assertEqual(self.s.selected_pane_id, "w1:p5")
+    # Cursor movement moved out of OfficeState with issue #27 - visual
+    # adjacency is the layout's to answer, not the model's. See test_layout.py.
 
-    def test_move_clamps_low(self):
-        self.s.move_selection(-5, 0, per_row=3)
-        self.assertEqual(self.s.selected_pane_id, "w1:p0")
+    def test_select_ignores_an_unknown_pane(self):
+        self.s.select("w1:p3")
+        self.s.select("nobody")
+        self.assertEqual(self.s.selected_pane_id, "w1:p3")
 
     def test_selection_fixed_after_removal(self):
         self.s.select("w1:p3")
