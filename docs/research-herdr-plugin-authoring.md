@@ -52,8 +52,9 @@
           "message":"plugin min_herdr_version is required"},"id":"cli:plugin"}
 ```
 
-リリースノートに記載のない変更である。本リポジトリの `herdr-plugin.toml` は既に宣言済み（`0.7.4`）なので
-link は通る。`InstalledPluginInfo` 側は引き続き optional + default `""`（= 既存レジストリの読み戻しは壊れない）。
+リリースノートに記載のない変更である。本リポジトリの `herdr-plugin.toml` は既に宣言済みなので link は通る
+（Issue #39 で `[[startup]]` を導入した際に `0.7.4` → **`0.7.5`** へ引き上げ済み）。
+`InstalledPluginInfo` 側は引き続き optional + default `""`（= 既存レジストリの読み戻しは壊れない）。
 
 セクション（すべて配列テーブル）:
 

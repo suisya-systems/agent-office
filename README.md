@@ -37,7 +37,7 @@ fleet moving.
 
 ## Quick Start
 
-Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.4 and
+Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.5 and
 Python 3.10+ on PATH: `python3` on Linux and macOS, `py` (the Python launcher,
 which the python.org installer adds) on Windows.
 

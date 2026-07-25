@@ -296,7 +296,7 @@ id = "agent-office"
 name = "Agent Office"
 version = "0.1.0"
 description = "Your agent fleet as a pixel-art office: see who's working, who's stuck, jump to them."
-min_herdr_version = "0.7.4"
+min_herdr_version = "0.7.5"
 platforms = ["linux", "macos", "windows"]
 
 [[panes]]
@@ -309,7 +309,7 @@ command = ["<runtime>", "office"]
 ```
 
 - `placement = "tab"` を既定とする（オフィスは横長レイアウトのため split より tab/zoomed が向く。ユーザーは `plugin.pane.open` の placement 上書きで split にもできる）。
-- バージョニング: semver。`min_herdr_version` は依存 API（events.subscribe の per-pane 購読、plugin.*）が揃う 0.7.4。tier 2 が `pane.graphics.stream` に依存する時点で引き上げ（**[0.7.5 注記]** `stream` は 0.7.5 でも未提供なので引き上げ条件は未達）。
+- バージョニング: semver。`min_herdr_version` は **0.7.5**。当初は依存 API（events.subscribe の per-pane 購読、plugin.*）が揃う 0.7.4 を下限としていたが、再起動後のプロセス復帰に使う `[[startup]]` フックが 0.7.5 の機能なので Issue #39 で引き上げた。0.7.4 を宣言し続けると「宣言した下限では再起動復帰が黙って効かない」（あるいは未知セクションでマニフェストごと拒否される。どちらになるかは未実測 — 調査ノート §2 の未実測欄）ことになり、下限の意味を満たさないため。tier 2 が `pane.graphics.stream` に依存する時点でさらに引き上げ（**[0.7.5 注記]** `stream` は 0.7.5 でも未提供なので引き上げ条件は未達）。
 - Windows: named pipe 接続と ANSI 出力（Windows Terminal は対応）に依存。cp932 コンソールを考慮し、**CLI の `--help` や print は ASCII のみ**、tier 判定で非 UTF-8 なら tier 0。
   - tier 判定の材料は `LANG` だけでは足りない。Windows はロケール変数を設定しないため、`LANG` 未設定時は `sys.stdout.encoding` を見る。逆に encoder が UTF-8 でないと判明した場合は `renderer` 設定より優先して tier 0 に落とす（cp932 では半ブロックが encode できず、フレームの途中で `UnicodeEncodeError` になるため）。
   - tier 0 でも安全ではない。ペインラベルやエージェント名は herdr 由来で任意の文字を含みうるので、`Screen._write` に `errors="replace"` のフォールバックを置く。1 文字が化けるのは、alternate screen 上にトレースバックを吐いてフレームごと壊すよりましである。

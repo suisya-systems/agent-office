@@ -137,9 +137,9 @@ def running_office_pane(panes, data):
     state.json names the pane the office process is actually drawing in, and
     is only trusted while it is fresh (statefile.FRESH_S) - a stale file means
     the office died and herdr may have recycled that pane id. The label match
-    is a fallback for herdr builds that expose `label` in pane.list; 0.7.4
-    does not, so on 0.7.4 an office started outside this plugin's state dir
-    simply results in a second pane being opened.
+    behind it covers an office started outside this plugin's state dir, and is
+    always available now that the manifest asks for herdr 0.7.5: 0.7.4 left
+    `label` out of pane.list, which is why this is written as a fallback.
     """
     live = {p.get("pane_id") for p in panes if p.get("pane_id")}
     recorded = statefile.live_office_pane_id(data)
@@ -159,9 +159,9 @@ def office_frames(panes, data):
     willingness to act on state.json's recorded pane id by itself: a restart
     may have handed that id to an unrelated pane, and closing a stranger's pane
     over a stale record is not a risk worth taking to save a tab. Requiring the
-    label costs nothing here - 0.7.5 does report `label` in pane.list, and
-    `[[startup]]` does not exist before 0.7.5, so this code never runs on the
-    0.7.4 that lacks it.
+    label costs nothing here: the manifest's floor is herdr 0.7.5, which does
+    report `label` in pane.list (and which is also the first herdr with the
+    `[[startup]]` hook that calls this).
 
     The recorded id still decides the *order*, which is what settles matters if
     more than one pane wears the label.

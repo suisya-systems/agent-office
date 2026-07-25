@@ -15,7 +15,11 @@ id = "agent-office"
 name = "Agent Office"
 version = "0.1.0"
 description = "Your agent fleet as a pixel-art office: see who's working, who's stuck, jump to them."
-min_herdr_version = "0.7.4"
+# 0.7.5, not 0.7.4: the [[startup]] hook below is a 0.7.5 feature, and a plugin
+# that declares a floor it does not actually work on is worse than one that
+# asks for an upgrade - on 0.7.4 the restart recovery would be silently absent
+# (or the manifest rejected outright; which of the two is unmeasured).
+min_herdr_version = "0.7.5"
 platforms = ["linux", "macos", "windows"]
 
 [[panes]]
