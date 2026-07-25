@@ -15,6 +15,26 @@ noticing a blocked agent to jumping to its pane there is no context switch.
 
 Design is in [`docs/design.md`](docs/design.md) (source of truth).
 
+## What it looks like
+
+Desks grouped by workspace, each with the agent's current task on its nameplate
+and its status underneath. These two shots are the same office a few minutes
+apart, showing what escalation looks like.
+
+![Agent Office pane: five desks grouped into three workspaces, the top one showing a raised hand and a neutral `! blocked` status, the rest reading `working` or `done`.](docs/images/office-blocked.png)
+
+The top desk has been `blocked` for less than `blocked_threshold_s`, so its
+speech bubble is a neutral `!`. The header keeps the count (`5 desks 1 blocked`)
+and the accent frame is the office cursor.
+
+![The same office after escalation: the identical top desk now shows a red `!! blocked` status, while every other desk is unchanged.](docs/images/office-escalated.png)
+
+Once the wait crosses `blocked_threshold_s` that same desk escalates: the bubble
+turns into a red `!!` at the moment the toast is sent. This is the ESCALATED
+overlay from [`docs/character-states.md`](docs/character-states.md) — nothing
+else about the desk changes, so a stuck agent stands out without the rest of the
+fleet moving.
+
 ## Quick Start
 
 Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.4 and
