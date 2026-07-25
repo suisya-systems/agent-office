@@ -206,6 +206,13 @@ and to opening a new pane. Deleting the file is harmless.
 | `?` | help overlay |
 | `q` | close the office pane |
 
+Keys that arrive in the first quarter-second after the office gains the focus are
+dropped, and the status line says so. herdr delivers a keystroke to whichever
+pane holds the focus, so the tail of whatever you were typing when you hit the
+open keybinding lands in the office — and an `Enter` in that tail used to be
+obeyed as a jump, handing your focus straight back out again (issue #21). Press
+the key again once the office is on screen.
+
 A minimal hint — `? help | Enter jump | b blocked | q quit` — sits on the status
 line during normal operation, so the `?` overlay is discoverable. A real message
 (a config warning, toast delivery note, or last error) takes the row while it has

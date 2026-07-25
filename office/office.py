@@ -50,6 +50,19 @@ MIN_REDRAW_S = 0.04                                # cap redraws at ~25 fps
 # must not turn into a pane.graphics.set on every single redraw.
 GRAPHICS_RETRY_S = 5.0
 
+# How long after gaining the focus a keystroke is read as one the user aimed
+# somewhere else (issue #21). herdr routes keys to whichever pane holds the
+# focus, so the tail of what the user was typing when they opened the office
+# lands *in* the office - and an `enter` among it used to be obeyed as "jump to
+# the selected desk", handing the focus straight back out again. The observed
+# gap between the focus and the stray key was 13ms; a quarter of a second
+# covers a keystroke or two more than that while staying far below the time it
+# takes a human to see the office appear and decide to press something, so no
+# deliberate keypress can fall inside the window.
+FOCUS_GRACE_S = 0.25
+
+ARRIVAL_HINT = "key ignored: it arrived with the focus; press again"
+
 TOAST_HINT = ("toasts are off: set [ui.toast] delivery = \"herdr\" "
               "in your herdr config")
 
@@ -133,6 +146,16 @@ class Office:
         # the pending notice down; each carries its own status_epoch as a token,
         # so overlapping presses never borrow each other's.
         self.refreshes_in_flight = 0
+        # Monotonic time until which arriving keys are treated as aimed
+        # elsewhere; armed by _note_focus when the focus lands here (issue #21).
+        # 0.0 means "no focus gain seen yet", which deliberately leaves the keys
+        # working: the gate must fail open, or a missed pane.focused event would
+        # take the keyboard away rather than one stray keypress.
+        self._focus_grace_until = 0.0
+        # When the first key was handled while the office believed some other
+        # pane held the focus, or None once that belief has moved. Bounds the
+        # second half of _arrived_with_focus to one window's worth of keys.
+        self._unfocused_key_at = None
 
     # -- main loop ------------------------------------------------------
 
@@ -145,6 +168,15 @@ class Office:
                 pass
         self.screen.install_resize_handler()
         self.screen.open()
+        # The other half of issue #21. When the office was *not* already
+        # running, action-open answers the keybinding with plugin.pane.open, and
+        # this process is the pane: the stray keystroke was buffered in the pty
+        # before stdin was even read, and the pane.focused event that would
+        # otherwise arm the grace fired before the Subscriber could connect, so
+        # it is never seen. Nothing has been drawn yet either way, which makes
+        # the first moments of a run exactly as unaimed as the first moments of
+        # a focus gain.
+        self._focus_grace_until = self.state.now() + FOCUS_GRACE_S
         self.input.start()
         self.notifier.start()
         self.commander.start()
@@ -275,7 +307,7 @@ class Office:
         elif kind == "closed":
             self.state.remove_pane(payload)
         elif kind == "focused":
-            self.state.set_focused(payload)
+            self._note_focus(payload)
         elif kind == "status":
             self.state.set_status(
                 payload.get("pane_id"), payload.get("agent_status", "unknown"),
@@ -352,7 +384,81 @@ class Office:
             self._overlay_ok = False
             self._overlay_retry_at = self.state.now() + GRAPHICS_RETRY_S
 
+    def _note_focus(self, pane_id):
+        """Track who holds the focus, and arm the grace on gaining it (#21).
+
+        Only the *transition* onto this pane arms it. Duplicated and replayed
+        events are harmless everywhere else in this loop by design (see the
+        Subscriber's module docstring), and this has to hold to that: re-arming
+        on a repeat would keep pushing the window forward while the user sits in
+        the office with their hands on the keyboard.
+
+        One case is deliberately left alone. An office opened focused before the
+        Subscriber connected has no focus belief at all, so the first
+        pane.focused naming this pane reads as a gain however old it really is,
+        and costs a keypress. herdr 0.7.5 was measured not to replay
+        pane.focused on subscribe - a fresh subscription sends nothing until the
+        focus actually moves - so today that first event *is* a real move. A
+        herdr that did replay would spend one keypress after each reconnect.
+        Telling the two apart needs a focus belief seeded from pane.list, and
+        every pane.list here is a round-trip old enough to roll a real gain
+        back (issue #12) - a worse failure than the keypress it would save.
+        """
+        me = self.state.self_pane_id
+        gained = bool(me) and pane_id == me and self.state.focused_pane_id != me
+        if pane_id != self.state.focused_pane_id:
+            self._unfocused_key_at = None      # a fresh belief, a fresh window
+        self.state.set_focused(pane_id)
+        if gained:
+            self._focus_grace_until = self.state.now() + FOCUS_GRACE_S
+
+    def _arrived_with_focus(self):
+        """Was this key delivered *by* the focus move rather than aimed here?
+
+        Two ways to tell, because the keystroke and the pane.focused event
+        reach the loop down different threads and either can win the race:
+
+          * the focus event arrived first, and less than FOCUS_GRACE_S ago.
+          * the office still believes another pane is focused. It cannot be
+            reading that pane's keyboard, so the focus has in fact moved and
+            the event simply has not caught up with the key it brought along.
+
+        The second is bounded to one FOCUS_GRACE_S from the first such key,
+        because "the event is right behind" and "the event is never coming"
+        look identical from here and only the first is worth waiting out. That
+        bound is the whole recovery: nothing else re-examines the belief, so a
+        pane.focused lost while the lifecycle connection was down stands until
+        the next one arrives. Left unbounded it would hand an outage the power
+        to make a focused office unusable - the connection can be down for
+        minutes, and every key would go, `q` included, so the pane could not
+        even be closed. Bounded, the whole outage costs the same quarter-second
+        as any other focus move.
+
+        Everything falls back to "the user meant it" when the answer is not
+        known - no self_pane_id (HERDR_PANE_ID unset), no focus seen yet, or the
+        window spent - so the worst case of a blind spot is the old behaviour
+        for one keypress, never a pane that has stopped listening.
+        """
+        me = self.state.self_pane_id
+        if not me:
+            return False
+        focused = self.state.focused_pane_id
+        if focused is not None and focused != me:
+            now = self.state.now()
+            if self._unfocused_key_at is None:
+                self._unfocused_key_at = now
+                return True
+            return now < self._unfocused_key_at + FOCUS_GRACE_S
+        return self.state.now() < self._focus_grace_until
+
     def _handle_key(self, name):
+        if self._arrived_with_focus():
+            # Deliberately every key, not just the jumping ones: `q` would
+            # close the office and `a`/`s` would reconfigure it, and none of
+            # them were typed at an office the user had yet to see. Saying so
+            # matters - the keypress is gone, and a second one works.
+            self.status_line = ARRIVAL_HINT
+            return
         if name in ("q", "quit"):
             # "quit" is Ctrl+C/Ctrl+D. On unix the tty raises SIGINT before it
             # ever reaches us, but Windows hands the character straight over,
