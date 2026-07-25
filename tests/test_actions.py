@@ -4,7 +4,8 @@
 test_reconciler does it and every request is recorded instead of sent. The
 question these tests exist to answer is what the action does with the *reply*
 to `plugin.pane.focus`: accepting it blindly is what let a focus that did
-nothing exit 0 (issue #20).
+nothing exit 0 (issue #20), and treating every failure of it as "there is no
+office" is what opened a second office beside a running one (issue #41).
 """
 
 import io
@@ -61,6 +62,12 @@ class ActionOpenTest(unittest.TestCase):
         self.reply = _focus_reply(True)
         self.raise_on_focus = None
         self.panes = [_office_pane()]
+        # Only consulted once `plugin.pane.focus` has answered not-found: the
+        # office is alive in the pane, and the generic focus lands (issue #41).
+        self.info = _process_info(procs=[_office_proc()])
+        self.generic_reply = {"type": "pane_info",
+                              "pane": {"pane_id": OFFICE_PANE, "focused": True}}
+        self.fail_on = {}                     # method -> exception to raise
 
         self._saved = (protocol.pane_list, protocol.request, actions._state,
                        actions._sock, sys.stderr)
@@ -76,10 +83,16 @@ class ActionOpenTest(unittest.TestCase):
 
     def _request(self, sock, method, params=None, **kw):
         self.calls.append((method, params))
+        if method in self.fail_on:
+            raise self.fail_on[method]
         if method == "plugin.pane.focus":
             if self.raise_on_focus is not None:
                 raise self.raise_on_focus
             return self.reply
+        if method == "pane.process_info":
+            return self.info
+        if method == "pane.focus":
+            return self.generic_reply
         return {}
 
     def methods(self):
@@ -109,13 +122,82 @@ class ActionOpenTest(unittest.TestCase):
         self.assertEqual(self.methods(), ["plugin.pane.focus"])
         self.assertIn("did not report", self.err.getvalue())
 
-    def test_focus_error_is_reported_and_falls_through_to_open(self):
-        self.raise_on_focus = protocol.ProtocolError("plugin_pane_not_found",
-                                                     "plugin pane not found")
+    def test_focus_error_is_reported_and_opens_nothing(self):
+        # An error that is not about ownership says nothing about whether the
+        # office is there, so opening would be a guess (issue #41).
+        self.raise_on_focus = protocol.ProtocolError("internal", "boom")
+        self.assertEqual(actions.action_open(), 1)
+        self.assertEqual(self.methods(), ["plugin.pane.focus"])
+        self.assertIn("internal", self.err.getvalue())
+
+    def test_transport_failure_opens_nothing(self):
+        self.raise_on_focus = OSError("herdr went away")
+        self.assertEqual(actions.action_open(), 1)
+        self.assertEqual(self.methods(), ["plugin.pane.focus"])
+
+    # -- ownership was lost, the office is still running (issue #41) ------
+
+    def _ownership_lost(self):
+        self.raise_on_focus = protocol.ProtocolError(
+            actions.PLUGIN_PANE_NOT_FOUND, "plugin pane not found")
+
+    def test_unowned_but_live_office_is_focused_generically(self):
+        # The regression this issue is about: a live handoff (which `herdr
+        # update` performs) leaves the office running in a pane herdr no longer
+        # calls ours. This used to open a second office beside the first.
+        self._ownership_lost()
         self.assertEqual(actions.action_open(), 0)
         self.assertEqual(self.methods(),
-                         ["plugin.pane.focus", "plugin.pane.open"])
-        self.assertIn("plugin_pane_not_found", self.err.getvalue())
+                         ["plugin.pane.focus", "pane.process_info",
+                          "pane.focus"])
+        self.assertEqual(self.calls[-1][1], {"pane_id": OFFICE_PANE})
+        self.assertNotIn("plugin.pane.open", self.methods())
+
+    def test_a_pane_that_is_really_gone_still_opens_one(self):
+        # The other thing `plugin_pane_not_found` means. The generic API is
+        # what tells the two apart, and it is decisive here.
+        self._ownership_lost()
+        self.fail_on["pane.process_info"] = protocol.ProtocolError(
+            actions.PANE_NOT_FOUND, "pane not found")
+        self.assertEqual(actions.action_open(), 0)
+        self.assertEqual(self.methods(),
+                         ["plugin.pane.focus", "pane.process_info",
+                          "plugin.pane.open"])
+
+    def test_restored_frame_without_an_office_opens_one(self):
+        # A pane wearing our label with only the shell a restart put back
+        # (issue #39). Focusing it would move the user to a dead prompt, so
+        # this must still open - the pane existing is not the question.
+        self._ownership_lost()
+        self.info = _process_info(procs=[_shell_proc()])
+        self.assertEqual(actions.action_open(), 0)
+        self.assertEqual(self.methods(),
+                         ["plugin.pane.focus", "pane.process_info",
+                          "plugin.pane.open"])
+        self.assertIn("no office is running", self.err.getvalue())
+
+    def test_unreadable_process_info_opens_nothing(self):
+        self._ownership_lost()
+        self.fail_on["pane.process_info"] = OSError("herdr went away")
+        self.assertEqual(actions.action_open(), 1)
+        self.assertNotIn("plugin.pane.open", self.methods())
+
+    def test_failed_generic_focus_opens_nothing(self):
+        self._ownership_lost()
+        self.fail_on["pane.focus"] = protocol.ProtocolError("internal", "boom")
+        self.assertEqual(actions.action_open(), 1)
+        self.assertNotIn("plugin.pane.open", self.methods())
+
+    def test_generic_focus_reporting_unfocused_falls_through_to_open(self):
+        # Issue #20's rule, applied on the fallback path too: herdr positively
+        # said the pane did not take the focus, and opening is the only
+        # recovery the action has.
+        self._ownership_lost()
+        self.generic_reply = {"type": "pane_info",
+                              "pane": {"pane_id": OFFICE_PANE,
+                                       "focused": False}}
+        self.assertEqual(actions.action_open(), 0)
+        self.assertEqual(self.methods()[-1], "plugin.pane.open")
 
     # -- no pane is running ----------------------------------------------
 

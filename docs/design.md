@@ -217,6 +217,21 @@ title = "Jump to longest-blocked agent"
 contexts = ["global"]
 command = ["<runtime>", "office", "action-jump-blocked"]
 ```
+- **`action-open` は「開かない理由」を 3 つに区別する（issue #41）**。`plugin.pane.focus` の失敗をひとまとめに
+  「オフィスが無い」と読むと、**所有権だけ失われた生きているオフィスの隣に 2 枚目を開く**（ペイン 2 枚・
+  エスカレータ 2 個・`state.json` ライタ 2 個）。herdr の plugin-pane 所有権レジストリはサーバープロセスの
+  メモリ上にしかなく、**再起動でも live handoff でも消える**（`herdr update` は handoff を行うので、
+  ユーザーは update のたびにこれを踏む）。しかも `plugin_pane_not_found` は「ペインが無い」ときと
+  「ペインはあるが所有権が無い」ときの**両方**で返るので、コードだけでは何も決まらない（0.7.5 実測）。
+  そこで `plugin_pane_not_found` を受けたら、汎用 API に決めさせる:
+  1. `pane.process_info` → `pane_not_found` なら本当にペインが無い → **開く**。
+  2. 同上でオフィスの argv が返れば「生きているが所有権が無い」 → 汎用 `pane.focus` で**フォーカスするだけ**
+     （所有権を失ったペインにも汎用 API は効く。startup フックが汎用 `pane.close` を使うのと同じ理由）。
+  3. 同上でシェルしか動いていなければ、再起動が枠だけ戻した死んだフレーム（issue #39）→ **開く**。
+     フォーカスの前に必ずこれを確かめる: 死んだフレームも同じラベルを着ているので、先にフォーカスすると
+     ユーザーを使えないプロンプトへ運んでしまう。
+  それ以外の失敗（transport エラー等）では**開かない**。オフィスが無いことを確かめられていないため、
+  開くのは当て推量になり、外したときの姿がこの issue そのものになる。失敗は `herdr plugin log` に残る。
 - `jump-blocked` は office ペインが**起動していなくても**動く単発コマンドとして実装する: `pane.list` → `agent_status == blocked` のうち起動が最古のペインへ `pane.focus`（blocked_since は単発コマンドでは分からないため pane_id 順のタイブレーク。office 稼働中は state ファイル（`HERDR_PLUGIN_STATE_DIR/state.json`、後述）を参照して正確な最古を選ぶ）。
 - ユーザーは herdr のキーバインド（`[[keys.command]]` で `herdr plugin action invoke agent-office.jump-blocked`）に割り当てられる。README に設定例を載せる。
 

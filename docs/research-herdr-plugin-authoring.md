@@ -104,6 +104,33 @@ live handoff でも「plugin 所有」ではなくなり、以後 `plugin.pane.f
 `plugin_pane_not_found` を返す（同一セッション内で開き直した直後のペインでは成功することを対照実験で確認済み）。
 汎用の `pane.close` / `pane.focus` は引き続き効く。
 
+### [0.7.5 実測 / Issue #41] `plugin_pane_not_found` は 2 つの状況を区別しない ✔
+
+live handoff 後の「オフィスのプロセスは生きているがペインの所有権だけ無い」状態と、存在しないペイン id を
+突っ込んだ場合とを、同一の隔離インスタンスで測り比べた結果:
+
+| 呼び出し | ペインは在る（所有権のみ喪失） | ペインが本当に無い |
+|---|---|---|
+| `plugin.pane.focus` | `plugin_pane_not_found` ✔ | `plugin_pane_not_found` ✔ |
+| `plugin.pane.close` | `plugin_pane_not_found` ✔ | （同上と推定・未測定） |
+| `pane.focus`（汎用） | **成功**（`pane.focused: true`）✔ | `pane_not_found` ✔ |
+| `pane.process_info`（汎用） | **成功**（マニフェストの argv が返る）✔ | `pane_not_found` ✔ |
+
+**つまり plugin API 側のエラーコードだけでは「ペインが無い」と「所有権が無い」は原理的に判別できない。**
+判別できるのは汎用 API のほうで、`pane_not_found` は本当に無いときにしか返らない。
+「`plugin.pane.focus` に失敗したら開く」と書くと、`herdr update`（= live handoff）のたびに
+生きているペインの隣へ 2 枚目を開く（Issue #41 の実測再現：pane 2 枚・エスカレータ 2 個・
+`state.json` ライタ 2 個）。
+
+さらに **フォールバック先で汎用 `pane.focus` を撃つ前に `pane.process_info` を見ること** ✔:
+再起動で復元された死んだ枠も同じラベルを着ており、汎用 `pane.focus` は**それにも成功してしまう**ので、
+確認せずにフォーカスするとユーザーを使えないシェルプロンプトへ運ぶ。`process_info` の
+`foreground_processes` は同じ 1 往復で「ペインが在るか」と「自分のプロセスが在るか」の両方に答える。
+
+応答形の実務メモ: 汎用 `pane.focus` の応答は `{"type":"pane_info","pane":{...,"focused":true}}` の
+**フラット形**で、`plugin.pane.focus` の `{"type":"plugin_pane_focused","plugin_pane":{"pane":{...}}}` と
+入れ子の深さが違う。両対応で読むこと（Issue #20 の focus 確認ロジックをそのまま再利用できる）。
+
 **復元された枠は「引き継げない」** ✔（Issue #39 の設計判断の根拠）:
 
 - `plugin.pane.focus` / `plugin.pane.close` → `plugin_pane_not_found`（上記の通り）。

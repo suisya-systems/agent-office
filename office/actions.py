@@ -19,8 +19,10 @@ back inside it.
 The choosing is kept apart from the doing. `visible_panes()`, `pick_blocked()`,
 `office_frames()` and `reclaimable_frame()` answer "which pane should this
 target?" and are directly testable, while the `action_*` entry points own the
-socket calls and the exit codes. Messages are ASCII only (Windows cp932
-safety).
+exit codes. `focus_office()` sits between the two: it makes socket calls, but
+what it returns is a *finding* - whether the office is focused, missing, or out
+of reach - because deciding that from one `except` branch is what opened a
+second office in issue #41. Messages are ASCII only (Windows cp932 safety).
 """
 
 import os
@@ -32,6 +34,24 @@ from .state import OfficeState
 
 PANE_TITLE = "Agent Office"          # manifest [[panes]].title == the pane label
 OFFICE_MODULE = "office"             # herdr spawns `<python> -m office run`
+
+#: herdr's answer when a pane is not registered to *this plugin*. Measured on
+#: 0.7.5 for two different situations: a pane that no longer exists, and a pane
+#: that is still there with the office still running in it but whose plugin
+#: ownership evaporated (issue #41). The code cannot tell them apart, so
+#: receiving it settles nothing on its own.
+PLUGIN_PANE_NOT_FOUND = "plugin_pane_not_found"
+#: The generic pane API's answer when the pane genuinely is not there. Unlike
+#: the above this one *is* decisive - which is why the fallback path asks the
+#: generic API rather than guessing.
+PANE_NOT_FOUND = "pane_not_found"
+
+# What `focus_office` concluded. Three outcomes, because "the office is gone"
+# and "the focus did not land" are different facts and only the first of them
+# justifies opening a second office.
+FOCUSED = "focused"                  # the office pane has the focus
+NO_OFFICE = "no_office"              # nothing live to focus; open one
+FOCUS_FAILED = "focus_failed"        # it did not land, and why is unknown
 
 
 def office_entrypoint(os_name=None):
@@ -140,6 +160,12 @@ def running_office_pane(panes, data):
     behind it covers an office started outside this plugin's state dir, and is
     always available now that the manifest asks for herdr 0.7.5: 0.7.4 left
     `label` out of pane.list, which is why this is written as a fallback.
+
+    Neither signal is affected by the ownership loss of issue #41 (measured on
+    0.7.5 across a live handoff): the pane keeps its id, pane.list keeps
+    reporting its `label`, and the office process keeps writing state.json
+    because it never noticed. So this still names the right pane there - it is
+    what happens to the answer afterwards that was wrong.
     """
     live = {p.get("pane_id") for p in panes if p.get("pane_id")}
     recorded = statefile.live_office_pane_id(data)
@@ -333,6 +359,108 @@ def action_startup():
     return 0
 
 
+def _read_focus(target, result):
+    """Turn a focus reply into an outcome (issue #20's three values)."""
+    confirmed = focus_confirmed(result)
+    if confirmed is False:
+        # herdr answered, and its answer was "still not focused". Opening is
+        # the only recovery this action has, and it is what the action would
+        # have done had the pane not been found at all - so take it rather
+        # than exiting 0 on a no-op.
+        sys.stderr.write("focus of %s was accepted but the pane is not "
+                         "focused; opening a new one.\n" % target)
+        return NO_OFFICE
+    if confirmed is None:
+        # Ambiguous, not failed. Opening here would mean a second office pane
+        # on every invocation for anyone whose herdr simply words the reply
+        # differently, which is worse than the no-op; a line in `herdr plugin
+        # log` is enough to see that the focus went unverified.
+        sys.stderr.write("focus of %s was accepted but herdr did not report "
+                         "the pane focused.\n" % target)
+    return FOCUSED
+
+
+def _focus_unowned(sock, target):
+    """`plugin.pane.focus` said not-found. Work out which not-found it was.
+
+    herdr keeps its record of which panes belong to which plugin in the server
+    process, so it does not outlive one: a server restart *or* a live handoff
+    leaves the pane exactly where it was and the office still running in it,
+    while `plugin.pane.focus` starts answering `plugin_pane_not_found` (issue
+    #41; `herdr update` performs a handoff, so users meet this on every
+    update). The same reply is what a pane that genuinely no longer exists
+    gets, and treating both as "no office" is what opened a second one beside
+    the first - two panes, two escalators, two state.json writers.
+
+    So ask the questions the plugin API cannot answer, in an order that cannot
+    do harm on the way:
+
+    * `pane.process_info` - which distinguishes the three cases outright. It
+      answers `pane_not_found` when the pane is gone, reports the office's own
+      argv when the office is alive and merely unowned, and reports a bare
+      shell for the frame a restart restored without its process (issue #39).
+      Only the middle case is worth focusing; the other two need a new office.
+    * the generic `pane.focus`, which keeps working on a pane whose plugin
+      ownership is gone (measured on 0.7.5, alongside the generic `pane.close`
+      the startup hook already relies on for the same reason).
+
+    Asking before focusing is the point of that order: a restored dead frame
+    wears our label and would take the focus just as willingly, and moving the
+    user to a shell prompt they cannot use is not better than opening the
+    office they asked for.
+    """
+    try:
+        info = protocol.pane_process_info(sock, target)
+    except protocol.ProtocolError as exc:
+        if exc.code == PANE_NOT_FOUND:
+            return NO_OFFICE            # it really is gone. Open a fresh one.
+        sys.stderr.write("process_info of %s failed: %s\n" % (target, exc))
+        return FOCUS_FAILED
+    except Exception as exc:                              # noqa: BLE001
+        sys.stderr.write("process_info of %s failed: %s\n" % (target, exc))
+        return FOCUS_FAILED
+
+    if not runs_office(info):
+        # The pane is there but nothing of ours is running in it - a frame a
+        # restart restored while the startup hook was unable to reclaim it, or
+        # a pane that took our label. Either way the office is missing.
+        sys.stderr.write("no office is running in %s; opening a new one.\n"
+                         % target)
+        return NO_OFFICE
+
+    try:
+        result = protocol.pane_focus(sock, target)
+    except Exception as exc:                              # noqa: BLE001
+        sys.stderr.write("generic focus of %s failed: %s\n" % (target, exc))
+        return FOCUS_FAILED
+    return _read_focus(target, result)
+
+
+def focus_office(sock, target):
+    """Focus the office already running in `target`; say what happened.
+
+    Returns FOCUSED, NO_OFFICE or FOCUS_FAILED. Only NO_OFFICE means the
+    caller should open a second pane, and that is the whole point of the
+    split: the version of this that lived inside `action_open` had one `except`
+    over every failure and opened on all of them, so an office that was alive
+    and simply unowned got a duplicate (issue #41).
+    """
+    try:
+        result = protocol.request(sock, "plugin.pane.focus",
+                                  {"pane_id": target})
+    except protocol.ProtocolError as exc:
+        if exc.code != PLUGIN_PANE_NOT_FOUND:
+            sys.stderr.write("focus of %s failed: %s\n" % (target, exc))
+            return FOCUS_FAILED
+        # A statement about *ownership*, which says nothing about whether the
+        # pane or the office is there. Somebody else has to answer that.
+        return _focus_unowned(sock, target)
+    except Exception as exc:                              # noqa: BLE001
+        sys.stderr.write("focus of %s failed: %s\n" % (target, exc))
+        return FOCUS_FAILED
+    return _read_focus(target, result)
+
+
 def action_open():
     sock = _sock()
     try:
@@ -341,31 +469,15 @@ def action_open():
         panes = []
     target = running_office_pane(panes, _state())
     if target:
-        try:
-            confirmed = focus_confirmed(
-                protocol.request(sock, "plugin.pane.focus", {"pane_id": target}))
-        except Exception as exc:                         # noqa: BLE001
-            sys.stderr.write("focus of %s failed: %s\n" % (target, exc))
-        else:
-            if confirmed is False:
-                # herdr answered, and its answer was "still not focused".
-                # Opening is the only recovery this action has, and it is what
-                # the action would have done had the pane not been found at
-                # all - so take it rather than exiting 0 on a no-op.
-                sys.stderr.write(
-                    "focus of %s was accepted but the pane is not focused; "
-                    "opening a new one.\n" % target)
-            else:
-                if confirmed is None:
-                    # Ambiguous, not failed. Opening here would mean a second
-                    # office pane on every invocation for anyone whose herdr
-                    # simply words the reply differently, which is worse than
-                    # the no-op; a line in `herdr plugin log` is enough to see
-                    # that the focus went unverified.
-                    sys.stderr.write(
-                        "focus of %s was accepted but herdr did not report "
-                        "the pane focused.\n" % target)
-                return 0
+        outcome = focus_office(sock, target)
+        if outcome == FOCUSED:
+            return 0
+        if outcome == FOCUS_FAILED:
+            # We could not focus the pane and could not establish that the
+            # office is gone. Opening on that would be a guess, and the wrong
+            # guess is the duplicate office of issue #41; the failure is in
+            # `herdr plugin log` and pressing the key again costs nothing.
+            return 1
     try:
         _open_office(sock, focus=True)
     except Exception as exc:                              # noqa: BLE001
