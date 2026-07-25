@@ -387,10 +387,22 @@ class Office:
     def _note_focus(self, pane_id):
         """Track who holds the focus, and arm the grace on gaining it (#21).
 
-        Only the *transition* onto this pane arms it. herdr repeats
-        pane.focused for a pane that is already focused (a reconnect replays
-        it), and re-arming on those would keep pushing the window forward while
-        the user sits in the office with their hands on the keyboard.
+        Only the *transition* onto this pane arms it. Duplicated and replayed
+        events are harmless everywhere else in this loop by design (see the
+        Subscriber's module docstring), and this has to hold to that: re-arming
+        on a repeat would keep pushing the window forward while the user sits in
+        the office with their hands on the keyboard.
+
+        One case is deliberately left alone. An office opened focused before the
+        Subscriber connected has no focus belief at all, so the first
+        pane.focused naming this pane reads as a gain however old it really is,
+        and costs a keypress. herdr 0.7.5 was measured not to replay
+        pane.focused on subscribe - a fresh subscription sends nothing until the
+        focus actually moves - so today that first event *is* a real move. A
+        herdr that did replay would spend one keypress after each reconnect.
+        Telling the two apart needs a focus belief seeded from pane.list, and
+        every pane.list here is a round-trip old enough to roll a real gain
+        back (issue #12) - a worse failure than the keypress it would save.
         """
         me = self.state.self_pane_id
         gained = bool(me) and pane_id == me and self.state.focused_pane_id != me
