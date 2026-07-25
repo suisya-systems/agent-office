@@ -15,7 +15,11 @@ id = "agent-office"
 name = "Agent Office"
 version = "0.1.0"
 description = "Your agent fleet as a pixel-art office: see who's working, who's stuck, jump to them."
-min_herdr_version = "0.7.4"
+# 0.7.5, not 0.7.4: the [[startup]] hook below is a 0.7.5 feature, and a plugin
+# that declares a floor it does not actually work on is worse than one that
+# asks for an upgrade - on 0.7.4 the restart recovery would be silently absent
+# (or the manifest rejected outright; which of the two is unmeasured).
+min_herdr_version = "0.7.5"
 platforms = ["linux", "macos", "windows"]
 
 [[panes]]
@@ -59,3 +63,18 @@ title = "Jump to longest-blocked agent"
 contexts = ["global"]
 platforms = ["windows"]
 command = ["py", "-3", "-m", "office", "action-jump-blocked"]
+
+# Restart recovery (issue #39). A server restart brings the office pane's
+# *frame* back - label, cwd, tab position - but does not re-run the command
+# above, so without this hook the plugin comes back as a bare shell wearing the
+# "Agent Office" label: no toasts, no state.json, nothing saying it died.
+# herdr runs one startup hook per enabled plugin after the session is restored,
+# so `office startup` is where the pane gets its process back. It is a no-op
+# unless a restored frame is there to reclaim - see office/actions.py.
+[[startup]]
+platforms = ["linux", "macos"]
+command = ["python3", "-m", "office", "startup"]
+
+[[startup]]
+platforms = ["windows"]
+command = ["py", "-3", "-m", "office", "startup"]

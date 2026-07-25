@@ -24,8 +24,9 @@
 - 0.7.5 の実測環境: WSL2 上の使い捨て headless セッション（検証後 delete 済み）。本番セッションには非破壊の読み取りのみ。
   手順は claude-org-ja `knowledge/raw/2026-07-25-herdr-headless-session-harness.md` と
   同 `2026-07-25-herdr-075-api-measurement.md`（0.7.5 実測で追加した隔離手法）を参照。
-- **未実測（推測で埋めていない項目）**: `[[startup]]` の live handoff 時の発火（§2）、
-  `agent.view` の mobile / mouse ナビゲーションへの影響（§9）、Windows での挙動全般。
+- **未実測（推測で埋めていない項目）**: `agent.view` の mobile / mouse ナビゲーションへの影響（§9）、
+  Windows での挙動全般、0.7.4 が未知の `[[startup]]` セクションを持つマニフェストを link できるか（§2）。
+  （`[[startup]]` の live handoff 時の発火は Issue #39 で実測済み。§2 参照）
 
 ## 1. トランスポートとプロトコル
 
@@ -51,8 +52,9 @@
           "message":"plugin min_herdr_version is required"},"id":"cli:plugin"}
 ```
 
-リリースノートに記載のない変更である。本リポジトリの `herdr-plugin.toml` は既に宣言済み（`0.7.4`）なので
-link は通る。`InstalledPluginInfo` 側は引き続き optional + default `""`（= 既存レジストリの読み戻しは壊れない）。
+リリースノートに記載のない変更である。本リポジトリの `herdr-plugin.toml` は既に宣言済みなので link は通る
+（Issue #39 で `[[startup]]` を導入した際に `0.7.4` → **`0.7.5`** へ引き上げ済み）。
+`InstalledPluginInfo` 側は引き続き optional + default `""`（= 既存レジストリの読み戻しは壊れない）。
 
 セクション（すべて配列テーブル）:
 
@@ -63,7 +65,7 @@ link は通る。`InstalledPluginInfo` 側は引き続き optional + default `""
 | `[[events]]` | `on`, `command` | `platforms` | イベントフック（単発コマンド起動）。未知のイベント名は **非致命 warning** として `plugin.list` に載る |
 | `[[link_handlers]]` | `id`, `title`, `pattern`, `action` | `platforms` | `pattern` は Rust regex、クリックされた URL にマッチ。`action` は同一プラグイン内の action 名 |
 | `[[build]]` | `command` | `platforms` | `plugin install` 時のみ実行（確認後）。失敗するとインストール中止。`plugin link` では **スキップ** |
-| `[[startup]]` | `command` | `platforms` | サーバー起動後に enabled プラグインごとに 1 回実行。失敗してもサーバーは止まらない。**[0.7.5 実測] スキーマに存在し正式機能** ✔（0.7.4 スキーマには現れなかった。詳細は下記） |
+| `[[startup]]` | `command` | `platforms` | サーバー起動**および live handoff** 後に enabled プラグインごとに 1 回実行 ✔。失敗してもサーバーは止まらない。**[0.7.5 実測] スキーマに存在し正式機能** ✔（0.7.4 スキーマには現れなかった。詳細は下記） |
 
 ### [0.7.5 実測] `[[startup]]` フックの実測結果 ✔
 
@@ -80,8 +82,38 @@ link は通る。`InstalledPluginInfo` 側は引き続き optional + default `""
 - `HERDR_PLUGIN_CONTEXT_JSON` に `"invocation_source":"startup"`, `"correlation_id":"plugin.startup"` と
   当時の workspace / tab / focused pane が入る。`HERDR_PANE_ID` は**プラグイン自身ではなくフォーカス中のペイン**。
 - **disabled のプラグインでは発火しない** ✔（`plugin disable` 後の再起動でフックのログが作られない）。
-- 未実測: **live handoff 時の発火**。リリースノートは "after server startup and live handoff" と書くが、
-  今回計測したのはサーバー起動のみ。live handoff 経路は測っていない。
+- **[Issue #39 実測] live handoff でも発火する** ✔。`server.live_handoff`（ソケットメソッドとして存在する）を
+  叩くと、サーバー起動時と同じようにフックが再実行される（マーカーファイルに 2 行目が増えることで確認）。
+  リリースノートの "after server startup and live handoff" は正確だった。
+  ただし**フックは「復帰が必要な状況」だけで発火するわけではない**点が設計に効く（次項）。
+
+### [0.7.5 実測 / Issue #39] 再起動と live handoff は「壊れ方」が違う ✔
+
+| | サーバー再起動 | live handoff (`server.live_handoff`) |
+|---|---|---|
+| `[[startup]]` フック | 発火する ✔ | 発火する ✔ |
+| ペインの**枠**（label/cwd/タブ） | 復元される ✔ | そのまま ✔ |
+| ペイン内の**プロセス** | **失われる**（既定シェルになる）✔ | **生き残る** ✔ |
+| plugin-pane の**所有権レジストリ** | **失われる** ✔ | **失われる** ✔ |
+
+つまり **live handoff では復帰処理は不要**であり、フックは「プロセスが生きているなら何もしない」を
+自分で判断する必要がある（さもないと `herdr update` のたびにオフィスが二重に開く）。
+
+**所有権レジストリが揮発する点は独立した罠** ✔: `plugin.pane.open` で開いたペインは、再起動でも
+live handoff でも「plugin 所有」ではなくなり、以後 `plugin.pane.focus` / `plugin.pane.close` は
+`plugin_pane_not_found` を返す（同一セッション内で開き直した直後のペインでは成功することを対照実験で確認済み）。
+汎用の `pane.close` / `pane.focus` は引き続き効く。
+
+**復元された枠は「引き継げない」** ✔（Issue #39 の設計判断の根拠）:
+
+- `plugin.pane.focus` / `plugin.pane.close` → `plugin_pane_not_found`（上記の通り）。
+- 復元されたシェルの環境変数に **`HERDR_PLUGIN_*` が 1 つも無い** ✔（`env | grep -c HERDR_PLUGIN` → 0。
+  残るのは `HERDR_ENV` / `HERDR_PANE_ID` / `HERDR_SESSION` / `HERDR_SOCKET_PATH` / `HERDR_STARTUP_CWD` /
+  `HERDR_TAB_ID` / `HERDR_WORKSPACE_ID`）。よって `pane.send_text` でその枠にコマンドを流し込む「引き継ぎ」は、
+  `HERDR_PLUGIN_CONFIG_DIR`（ユーザー設定）と `HERDR_PLUGIN_STATE_DIR`（state.json）を失ったプロセスになる。
+- `plugin.pane.open` は**引き継がず 2 枚目を開く** ✔（別 tab_id の新しいペインが増える）。
+
+→ 復帰させたいなら「枠を `pane.close` してから `plugin.pane.open`」が唯一まともな経路。
 
 **セッション復元との役割分担（設計に直結する実測）** ✔:
 

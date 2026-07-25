@@ -37,7 +37,7 @@ fleet moving.
 
 ## Quick Start
 
-Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.4 and
+Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.5 and
 Python 3.10+ on PATH: `python3` on Linux and macOS, `py` (the Python launcher,
 which the python.org installer adds) on Windows.
 
@@ -281,6 +281,19 @@ description = "jump to longest-blocked agent"
 
 herdr's built-in `open_notification_target` (`prefix+o`) also jumps to the pane
 that raised the most recent toast.
+
+## After a herdr restart
+
+Restarting the herdr server — which `herdr update` does — brings the office
+pane's *frame* back but does not re-run its command, so without help the office
+would return as a bare shell wearing the "Agent Office" label: no toasts, no
+escalation, nothing saying it had died.
+
+The plugin registers a `[[startup]]` hook (herdr 0.7.5+) that puts the process
+back. It only does so if a restored office pane is actually there, so an office
+you closed on purpose stays closed, and it restores the pane *behind* whatever
+you are looking at rather than taking the focus. A live handoff leaves the
+office process running, and the hook leaves it alone.
 
 ## Tests
 

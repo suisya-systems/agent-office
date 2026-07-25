@@ -2,13 +2,14 @@
 
 Subcommands (invoked by herdr via the manifest, CWD = plugin root):
   run                    run the resident office pane (default)
+  startup                restore the office pane after a server restart
   action-open            focus the running office pane, or open one
   action-jump-blocked    focus the longest-blocked agent
   config-check           validate config.toml and print the effective settings
 
 This module only maps argv to a handler and prints; `run` lives in office.py
-and the two global actions in actions.py. Help/print text is ASCII only
-(Windows cp932 safety).
+and the actions - including the `[[startup]]` hook - in actions.py. Help/print
+text is ASCII only (Windows cp932 safety).
 """
 
 import os
@@ -20,9 +21,10 @@ from . import office
 
 USAGE = """Agent Office - herdr plugin
 
-usage: python3 -m office [run|action-open|action-jump-blocked|config-check]
+usage: python3 -m office [run|startup|action-open|action-jump-blocked|config-check]
 
   run                  run the resident office pane (default)
+  startup              restore the office pane after a herdr server restart
   action-open          focus the running office pane, or open one
   action-jump-blocked  focus the longest-blocked agent
   config-check         validate config.toml and show the effective settings
@@ -59,6 +61,7 @@ def config_check():
 COMMANDS = {
     "run": office.run,
     "office": office.run,
+    "startup": actions.action_startup,
     "action-open": actions.action_open,
     "action-jump-blocked": actions.action_jump_blocked,
     "config-check": config_check,

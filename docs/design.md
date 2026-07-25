@@ -81,14 +81,37 @@
 
 `pane.agent_status_changed` は変化時のみ発火し「購読開始時に現在値を配る」保証はないため、購読確立の前後ギャップは上記の snapshot 再同期でのみ埋まる（イベント待ちでの自然収束には頼らない）。スナップショットで発見された未知ペインも S 張り直しデバウンスのトリガになる。
 
-再接続: サーバー再起動等で接続が切れたら指数バックオフで全接続を張り直し、`pane.list` で再同期。office ペイン自身は `[[startup]]` フックではなく通常ペインとして herdr セッションに残るため、セッション復元後も自動で復帰する。
+再接続: サーバー再起動等で接続が切れたら指数バックオフで全接続を張り直し、`pane.list` で再同期。ただし**サーバー再起動では接続だけでなく office プロセス自体が失われる**ので、張り直しでは足りない。プロセスの復帰は `[[startup]]` フックが担う（下記）。
 
-> **[0.7.5 注記] 上記の「セッション復元後も自動で復帰する」は誤りである。** 0.7.5 実測では、サーバー再起動時に
-> プラグイン所有ペインの**枠（label / cwd / タブ位置）は復元されるが、マニフェストの `command` は再実行されない**
-> （復元されたペインには既定シェルが入る。`pane.process_info` で確認）。つまり再起動後に残るのは
-> 「Agent Office というラベルの付いた素のシェル」であり、office プロセスは動いていない。
-> 0.7.5 で追加された `[[startup]]` フックはまさにこの穴を埋める機構で、フック内から `plugin.pane.open` が
-> 成功することも実測済み。詳細は調査ノート §2、対応方針は Issue #38（本タスクでは設計を再決定しない）。
+> **[0.7.5] サーバー再起動後のプロセス復帰（Issue #39 で実装）**
+>
+> 実測: サーバー再起動時にプラグイン所有ペインの**枠（label / cwd / タブ位置）は復元されるが、マニフェストの
+> `command` は再実行されない**（復元されたペインには既定シェルが入る。`pane.process_info` で確認）。再起動後に
+> 残るのは「Agent Office というラベルの付いた素のシェル」であり、トースト・エスカレーション・state.json の
+> 書き出しがすべて黙って止まる。`herdr update` はサーバーを再起動するため、これは通常運用で毎回起きていた。
+>
+> 対策として `[[startup]]` フック（`python3 -m office startup` → `office/actions.py` の `action_startup`）を持つ。
+> herdr は enabled なプラグインごとに、セッション復元完了後・ソケット利用可能な状態でこれを 1 回実行する。挙動:
+>
+> - **復元された枠がある場合だけ復帰させる。** ラベル `Agent Office` を持つペインの存在そのものが
+>   「再起動前にユーザーがオフィスを開いていた」signal。枠が無ければ何もしない（意図的に閉じたオフィスを
+>   勝手に開き直さない）。plugin が disabled ならフック自体が発火しない（実測）ので、その層でも守られる。
+> - **復帰は「枠を `pane.close` してから `plugin.pane.open`」。** 復元された枠を再利用することはできない:
+>   その枠はもはや plugin 所有ではなく（`plugin.pane.focus` / `plugin.pane.close` が `plugin_pane_not_found`
+>   を返す）、`HERDR_PLUGIN_*` 環境変数も失っている（= そのシェルでコマンドを起動しても
+>   `HERDR_PLUGIN_CONFIG_DIR` / `HERDR_PLUGIN_STATE_DIR` の無いオフィスになる）。閉じてから開くことで
+>   「Agent Office タブが 2 枚」を作らない。
+> - **focus は奪わない**（`focus: false`）。フックはユーザーがフォーカス中のペインを持った状態で走るため、
+>   ここで focus を動かすのは Issue #21 で直した不具合を別経路から作り直すことになる。
+>   `action-open` が渡す `focus: true` はユーザー起点の open にのみ正しい。
+> - **生死の判定は state.json ではなく `pane.process_info`。** 再起動直後の state.json は `running: true` の
+>   まま残り（オフィスは終了処理を走らせる間もなく落ちる）、記録された pane id は復元された枠に解決するため、
+>   state.json だけでは死んだオフィスと生きたオフィスを区別できない。
+> - **live handoff でもフックは発火するが、そのとき office プロセスは生き残っている**（実測）。
+>   `pane.process_info` にオフィスが見えたら何もしないので、`herdr update` のたびに二重起動することはない。
+> - 枠に**ユーザーが何か起動している場合は触らない**（`pane.close` は取り消せないため）。
+>
+> 実測の詳細は調査ノート §2。
 
 **実装時検証事項**: `pane.updated`（ブロードキャスト、pane_id 不要）が agent_status 変化でも発火するなら、接続 S を廃止して L だけの単純構成にできる可能性がある。Stage 2 冒頭で実測し、発火するなら簡素化する（本設計は発火しない前提でも成立する保守的構成）。
 
@@ -273,7 +296,7 @@ id = "agent-office"
 name = "Agent Office"
 version = "0.1.0"
 description = "Your agent fleet as a pixel-art office: see who's working, who's stuck, jump to them."
-min_herdr_version = "0.7.4"
+min_herdr_version = "0.7.5"
 platforms = ["linux", "macos", "windows"]
 
 [[panes]]
@@ -286,7 +309,7 @@ command = ["<runtime>", "office"]
 ```
 
 - `placement = "tab"` を既定とする（オフィスは横長レイアウトのため split より tab/zoomed が向く。ユーザーは `plugin.pane.open` の placement 上書きで split にもできる）。
-- バージョニング: semver。`min_herdr_version` は依存 API（events.subscribe の per-pane 購読、plugin.*）が揃う 0.7.4。tier 2 が `pane.graphics.stream` に依存する時点で引き上げ（**[0.7.5 注記]** `stream` は 0.7.5 でも未提供なので引き上げ条件は未達）。
+- バージョニング: semver。`min_herdr_version` は **0.7.5**。当初は依存 API（events.subscribe の per-pane 購読、plugin.*）が揃う 0.7.4 を下限としていたが、再起動後のプロセス復帰に使う `[[startup]]` フックが 0.7.5 の機能なので Issue #39 で引き上げた。0.7.4 を宣言し続けると「宣言した下限では再起動復帰が黙って効かない」（あるいは未知セクションでマニフェストごと拒否される。どちらになるかは未実測 — 調査ノート §2 の未実測欄）ことになり、下限の意味を満たさないため。tier 2 が `pane.graphics.stream` に依存する時点でさらに引き上げ（**[0.7.5 注記]** `stream` は 0.7.5 でも未提供なので引き上げ条件は未達）。
 - Windows: named pipe 接続と ANSI 出力（Windows Terminal は対応）に依存。cp932 コンソールを考慮し、**CLI の `--help` や print は ASCII のみ**、tier 判定で非 UTF-8 なら tier 0。
   - tier 判定の材料は `LANG` だけでは足りない。Windows はロケール変数を設定しないため、`LANG` 未設定時は `sys.stdout.encoding` を見る。逆に encoder が UTF-8 でないと判明した場合は `renderer` 設定より優先して tier 0 に落とす（cp932 では半ブロックが encode できず、フレームの途中で `UnicodeEncodeError` になるため）。
   - tier 0 でも安全ではない。ペインラベルやエージェント名は herdr 由来で任意の文字を含みうるので、`Screen._write` に `errors="replace"` のフォールバックを置く。1 文字が化けるのは、alternate screen 上にトレースバックを吐いてフレームごと壊すよりましである。
