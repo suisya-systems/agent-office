@@ -26,7 +26,7 @@ def _office_pane(pane_id=OFFICE_PANE):
 def _focus_reply(focused=True, pane_id=OFFICE_PANE):
     """The shape herdr 0.7.5 answers `plugin.pane.focus` with."""
     return {"type": "plugin_pane_focused",
-            "plugin_pane": {"plugin_id": "agent-office",
+            "plugin_pane": {"plugin_id": "herdr-agent-office",
                             "entrypoint": "office",
                             "pane": {"pane_id": pane_id, "focused": focused}}}
 

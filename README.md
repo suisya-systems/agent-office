@@ -41,22 +41,23 @@ Agent Office is pure Python stdlib — no build step. It needs herdr >= 0.7.5 an
 Python 3.10+ on PATH: `python3` on Linux and macOS, `py` (the Python launcher,
 which the python.org installer adds) on Windows.
 
-On Windows the action ids carry a `-windows` suffix (`agent-office.open-windows`
-and `agent-office.jump-blocked-windows`) because herdr requires unique ids and
+On Windows the action ids carry a `-windows` suffix
+(`herdr-agent-office.open-windows` and
+`herdr-agent-office.jump-blocked-windows`) because herdr requires unique ids and
 the manifest has to declare a separate entry per platform to name the right
 interpreter. Windows plugin support is in preview in herdr.
 
 **Install** directly from GitHub:
 
 ```sh
-herdr plugin install suisya-systems/agent-office
+herdr plugin install suisya-systems/herdr-agent-office
 ```
 
 **Develop against a local checkout:**
 
 ```sh
-herdr plugin link /path/to/agent-office
-herdr plugin pane open --plugin agent-office --entrypoint office --placement tab
+herdr plugin link /path/to/herdr-agent-office
+herdr plugin pane open --plugin herdr-agent-office --entrypoint office --placement tab
 ```
 
 On herdr 0.7.5 and later, `install` and `link` (and a plugin's enabled state) are
@@ -69,24 +70,24 @@ On Windows the pane id is `office-windows`, for the same reason the action ids
 differ; herdr answers `platform_unsupported` if you ask for the other one:
 
 ```sh
-herdr plugin pane open --plugin agent-office --entrypoint office-windows --placement tab
+herdr plugin pane open --plugin herdr-agent-office --entrypoint office-windows --placement tab
 ```
 
 ### Recommended: bind a key
 
-`agent-office.open` focuses the office pane if one is already running and opens
-one otherwise, so a single key gets you to the office from anywhere. Add this
-to your herdr config:
+`herdr-agent-office.open` focuses the office pane if one is already running and
+opens one otherwise, so a single key gets you to the office from anywhere. Add
+this to your herdr config:
 
 ```toml
 [[keys.command]]
 key = "prefix+alt+o"
 type = "plugin_action"
-command = "agent-office.open"
+command = "herdr-agent-office.open"
 description = "open Agent Office"
 ```
 
-On Windows use `agent-office.open-windows`, per the id note above. A second
+On Windows use `herdr-agent-office.open-windows`, per the id note above. A second
 global action jumps straight to the longest-blocked agent; see
 [Actions and keybindings](#actions-and-keybindings).
 
@@ -111,8 +112,14 @@ retrying forever.
 Agent Office is zero-config: with no file at all every setting below falls
 back to its default. To change something, create `config.toml` in the plugin's
 config directory (herdr passes it as `HERDR_PLUGIN_CONFIG_DIR`; typically
-`~/.config/herdr/plugins/agent-office/`). Settings are read once at startup;
-reopen the office pane to apply changes.
+`~/.config/herdr/plugins/config/herdr-agent-office/`). Settings are read once at
+startup; reopen the office pane to apply changes.
+
+herdr derives that directory from the plugin id, so if you installed Agent
+Office in the first days after publication — when the id was `agent-office` —
+move your `config.toml` from `~/.config/herdr/plugins/config/agent-office/` to
+the path above, or it is silently ignored and every setting falls back to its
+default.
 
 ```toml
 [office]
@@ -146,7 +153,7 @@ status line.
 
 **`name_template`** shortens long names on desk nameplates and room labels.
 `"{name:last-segment}"` keeps only the part after the last `/`, which turns a
-label like `claude-org/8f3a…/g7/project:agent-office/a2` into `a2`.
+label like `claude-org/8f3a…/g7/project:herdr-agent-office/a2` into `a2`.
 
 **`plate_lines`** gives the desk nameplate a second row. Everything is laid out
 by terminal display width, so a full-width (CJK) character takes the two
@@ -166,7 +173,7 @@ renderer tier, including the ASCII one.
 The supported renderers are `unicode` and `ascii`, and those are what `auto`
 picks between. The tier 2 graphics renderer is unsupported for now — setting it
 leaves the office undrawn rather than falling back — and is tracked in
-[#24](https://github.com/suisya-systems/agent-office/issues/24).
+[#24](https://github.com/suisya-systems/herdr-agent-office/issues/24).
 
 ### Escalation behaviour
 
@@ -190,9 +197,9 @@ speech bubble turns from `!` to a red `!!` on screen.
 ### Runtime state
 
 The office pane writes `HERDR_PLUGIN_STATE_DIR/state.json` every 10 seconds and
-whenever the desks change. It is what lets `agent-office.jump-blocked` pick the
-genuinely longest-blocked agent and `agent-office.open` focus the office pane
-that is already running.
+whenever the desks change. It is what lets `herdr-agent-office.jump-blocked`
+pick the genuinely longest-blocked agent and `herdr-agent-office.open` focus the
+office pane that is already running.
 
 Both actions still work without it: they only trust the file while an office
 process is actively writing it, and otherwise fall back to ordering by pane id
@@ -265,9 +272,9 @@ character: a raised hand and its speech bubble are never covered by a hat.
 
 Two actions are exposed globally and work even when the office pane is not open:
 
-- `agent-office.open` — focus the running office pane, or open one. A
+- `herdr-agent-office.open` — focus the running office pane, or open one. A
   suggested binding is in [Quick Start](#recommended-bind-a-key).
-- `agent-office.jump-blocked` — focus the longest-blocked agent's pane.
+- `herdr-agent-office.jump-blocked` — focus the longest-blocked agent's pane.
 
 Bind `jump-blocked` to a herdr key so a stuck agent is one key away:
 
@@ -275,7 +282,7 @@ Bind `jump-blocked` to a herdr key so a stuck agent is one key away:
 [[keys.command]]
 key = "prefix+alt+j"
 type = "plugin_action"
-command = "agent-office.jump-blocked"
+command = "herdr-agent-office.jump-blocked"
 description = "jump to longest-blocked agent"
 ```
 

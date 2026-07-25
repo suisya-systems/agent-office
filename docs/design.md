@@ -33,7 +33,7 @@
                           ▲            │ NDJSON events
         short-lived conns │            │ long-lived conns
   ┌───────────────────────┴────────────▼──────────────────────┐
-  │ agent-office pane process(TUI)                            │
+  │ herdr-agent-office pane process(TUI)                      │
   │                                                           │
   │  ┌────────────┐   ┌───────────────┐   ┌────────────────┐  │
   │  │ Subscriber │──▶│  OfficeState  │──▶│    Renderer    │  │
@@ -233,7 +233,7 @@ command = ["<runtime>", "office", "action-jump-blocked"]
   それ以外の失敗（transport エラー等）では**開かない**。オフィスが無いことを確かめられていないため、
   開くのは当て推量になり、外したときの姿がこの issue そのものになる。失敗は `herdr plugin log` に残る。
 - `jump-blocked` は office ペインが**起動していなくても**動く単発コマンドとして実装する: `pane.list` → `agent_status == blocked` のうち起動が最古のペインへ `pane.focus`（blocked_since は単発コマンドでは分からないため pane_id 順のタイブレーク。office 稼働中は state ファイル（`HERDR_PLUGIN_STATE_DIR/state.json`、後述）を参照して正確な最古を選ぶ）。
-- ユーザーは herdr のキーバインド（`[[keys.command]]` で `herdr plugin action invoke agent-office.jump-blocked`）に割り当てられる。README に設定例を載せる。
+- ユーザーは herdr のキーバインド（`[[keys.command]]` で `herdr plugin action invoke herdr-agent-office.jump-blocked`）に割り当てられる。README に設定例を載せる。
 
 > **[0.7.5 注記] herdr 側に順序決定の機構が生えた。** 0.7.5 の `agent.view.set`（`filter` + `sort`）は
 > sidebar の表示内容と **agent キーバインド（`[keys] focus_agent`）のジャンプ順**を再定義する。実測では
@@ -302,12 +302,13 @@ exclude_agents = []          # agent 名で除外 (例 ["codex"])
 > 3. **`min_herdr_version` は必須項目になった**（0.7.5 では欠落マニフェストの link が拒否される）。
 >    本リポジトリの `herdr-plugin.toml` は宣言済みなので現状は影響なし。
 
-- **リポジトリ**: 独立 GitHub リポジトリ（例 `agent-office`）、topic **`herdr-plugin`** を付与しマーケットプレイス掲載（調査ノート §7）。ライセンス MIT。
-- **インストール**: `herdr plugin install <owner>/agent-office`。ランタイム依存を増やさないため `[[build]]` は空にする方針（§12 の言語選択に依存）。開発は `herdr plugin link`。
+- **リポジトリ**: 独立 GitHub リポジトリ `herdr-agent-office`、topic **`herdr-plugin`** を付与しマーケットプレイス掲載（調査ノート §7）。ライセンス MIT。
+- **インストール**: `herdr plugin install <owner>/herdr-agent-office`。ランタイム依存を増やさないため `[[build]]` は空にする方針（§12 の言語選択に依存）。開発は `herdr plugin link`。
+- **命名**: リポジトリ名・plugin id とも `herdr-` 接頭辞を付ける。**公開時（2026-07-26）は `agent-office` だった**が、topic `herdr-plugin` を持つ公開リポジトリ 100 件の大半が `herdr-` 接頭辞を採っていたため、公開直後にリポジトリ名を改名し（旧 URL のリダイレクトは実測確認済み）、id も揃えた。id は表示名ではなく**名前空間**である点が効く: herdr はグローバルに一意な名前が要るときアクション id を `<plugin.id>.<action>` に修飾し、プラグインの config dir も `plugins/config/<id>/` に切る。したがって id の変更は `herdr-agent-office.open` 等のアクション名と既存ユーザーの設定ファイル置き場を同時に動かす（README に移行の一文を置いた）。
 - **マニフェスト骨子**:
 
 ```toml
-id = "agent-office"
+id = "herdr-agent-office"
 name = "Agent Office"
 version = "0.1.0"
 description = "Your agent fleet as a pixel-art office: see who's working, who's stuck, jump to them."
