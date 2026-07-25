@@ -158,8 +158,9 @@ a darker, neon-lit room; `daylight` is a bright one. Themes colour the sprites
 and the text (header, nameplates, status words), so they work on every
 renderer tier, including the ASCII one.
 
-There is no tier 2 renderer at the moment; `auto` picks between `unicode` and
-`ascii`. Progress on a graphics tier is tracked in
+The supported renderers are `unicode` and `ascii`, and those are what `auto`
+picks between. The tier 2 graphics renderer is unsupported for now — setting it
+leaves the office undrawn rather than falling back — and is tracked in
 [#24](https://github.com/suisya-systems/agent-office/issues/24).
 
 ### Escalation behaviour
