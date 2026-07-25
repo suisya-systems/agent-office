@@ -8,7 +8,7 @@ import contextlib
 import io
 import unittest
 
-from office import cli, screen
+from office import cli, screen, textwidth
 
 
 class Cp932Stream(io.StringIO):
@@ -42,13 +42,75 @@ class NarrowConsoleTest(unittest.TestCase):
         self.assertIn("here", self.out.getvalue())
 
     def test_the_replacement_keeps_the_frame_the_same_width(self):
+        # A rocket draws in two columns; spending one `?` on it would slide
+        # everything to its right one column left (#28).
         frame = "abc\U0001f680def"
         self.screen.write(frame)
-        self.assertEqual(len(self.out.getvalue()), len(frame))
+        self.assertEqual(textwidth.width(self.out.getvalue()),
+                         textwidth.width(frame))
+
+    def test_every_line_of_a_mixed_frame_keeps_its_width(self):
+        # Half-blocks a cp932 console cannot take, a name it can, and one it
+        # cannot - the three ways a real frame meets a narrow console.
+        frame = "\n".join(("▀▀ desk ▀▀",
+                           "テスト agent",       # cp932 has these
+                           "你好 \U0001f680 hi"))    # ...and not these
+        self.screen.write(frame)
+        written = self.out.getvalue().split("\n")
+        self.assertEqual([textwidth.width(line) for line in written],
+                         [textwidth.width(line) for line in frame.split("\n")])
+        self.assertIn("テスト", written[1])   # kept, not filled
+
+    def test_colour_survives_the_replacement(self):
+        # The escape is invisible and must be carried across whole: mangle it
+        # and its bytes land on the terminal as text, widening the line.
+        frame = "\x1b[38;2;1;2;3m▀▀\x1b[0m"
+        self.screen.write(frame)
+        written = self.out.getvalue()
+        self.assertEqual(written, "\x1b[38;2;1;2;3m??\x1b[0m")
+
+    def test_a_zero_width_mark_costs_no_column(self):
+        # The combining acute is not in cp932 either; it drew no column, so
+        # it takes none - and the letter under it is kept, not filled over.
+        frame = "étage"
+        self.screen.write(frame)
+        self.assertEqual(self.out.getvalue(), "etage")
+
+    def test_a_selector_that_widens_its_base_is_filled_whole(self):
+        # U+26A0 U+FE0F draws in two columns, U+26A0 alone in one, so keeping
+        # the bare base would hand a column back. Fill the pair instead.
+        self.screen.write("⚠️")
+        self.assertEqual(self.out.getvalue(), "??")
 
     def test_an_encodable_frame_is_untouched(self):
         self.screen.write("\x1b[Hplain ascii")
         self.assertEqual(self.out.getvalue(), "\x1b[Hplain ascii")
+
+
+class RealStreamTest(unittest.TestCase):
+    """The console the office actually gets: a TextIOWrapper it may reconfigure.
+
+    A StringIO cannot show this. `open()` used to hand the substituting to the
+    codec, which meant the width-preserving replacement above never ran where
+    it mattered - the frame reached a cp932 terminal one column short per
+    full-width character it could not encode (#28).
+    """
+
+    def _open(self):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp932", newline="")
+        screen.Screen(stream).open()
+        raw.truncate(0), raw.seek(0)              # drop the alt-screen preamble
+        return raw, stream
+
+    def test_open_leaves_the_stream_raising_so_we_do_the_replacing(self):
+        _raw, stream = self._open()
+        self.assertEqual(stream.errors, "strict")
+
+    def test_a_full_width_character_costs_two_columns_on_the_wire(self):
+        raw, stream = self._open()
+        screen.Screen(stream).write("[你]")       # not in cp932
+        self.assertEqual(raw.getvalue(), b"[??]")
 
 
 class ScreenTest(unittest.TestCase):

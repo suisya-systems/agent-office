@@ -127,6 +127,14 @@ class ClusterTest(unittest.TestCase):
             cut = tw.truncate(thumb, limit)
             self.assertIn(cut, ("", thumb), "limit %d -> %r" % (limit, cut))
 
+    def test_a_control_character_binds_to_nothing(self):
+        # Zero-width, but a boundary rather than an accent: a cluster that
+        # swallowed the newline could not be replaced without taking the line
+        # break with it, which is how a frame loses a row (#28).
+        self.assertEqual([chunk for chunk, _cols in tw.units("▀\na")],
+                         ["▀", "\n", "a"])
+        self.assertEqual(tw.width("▀\na"), 2)
+
     def test_clusters_never_push_a_line_over_its_budget(self):
         for text in ("⚠️⚠️⚠️", "a⚠️b", "👨‍💻x", "👍🏽👍🏽", "é⚠️変"):
             for limit in range(0, 12):
