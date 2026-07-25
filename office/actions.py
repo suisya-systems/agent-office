@@ -99,6 +99,31 @@ def pick_blocked(panes, blocked_since_by_pane=None):
     return sorted(blocked, key=sort_key)[0]["pane_id"]
 
 
+def focus_confirmed(result):
+    """Did herdr's reply say the pane now holds the focus? (issue #20)
+
+    `plugin.pane.focus` answering without an error only means the request was
+    accepted, and action-open used to read that as "focused" and exit 0 - so a
+    focus that was accepted and then did nothing was indistinguishable from a
+    focus that worked, which is the half of issue #20 that made it hard to
+    notice. The reply does carry the answer, nested as
+    `plugin_pane.pane.focused` on 0.7.5 (a flat `pane` is accepted too, since
+    the shape is not part of any documented contract).
+
+    Three-valued on purpose. None means *the reply did not say*, which is what
+    a herdr whose reply shape we have not seen looks like, and it must not be
+    confused with a herdr that positively reported the pane still unfocused:
+    only the latter is worth opening a second pane over.
+    """
+    if not isinstance(result, dict):
+        return None
+    pane = result.get("plugin_pane")
+    pane = pane.get("pane") if isinstance(pane, dict) else result.get("pane")
+    if not isinstance(pane, dict) or "focused" not in pane:
+        return None
+    return bool(pane["focused"])
+
+
 def running_office_pane(panes, data):
     """Identify the live office pane, preferring state.json's exact id.
 
@@ -131,10 +156,30 @@ def action_open():
     target = running_office_pane(panes, _state())
     if target:
         try:
-            protocol.request(sock, "plugin.pane.focus", {"pane_id": target})
-            return 0
-        except Exception:                                # noqa: BLE001
-            pass                                         # fall through to open
+            confirmed = focus_confirmed(
+                protocol.request(sock, "plugin.pane.focus", {"pane_id": target}))
+        except Exception as exc:                         # noqa: BLE001
+            sys.stderr.write("focus of %s failed: %s\n" % (target, exc))
+        else:
+            if confirmed is False:
+                # herdr answered, and its answer was "still not focused".
+                # Opening is the only recovery this action has, and it is what
+                # the action would have done had the pane not been found at
+                # all - so take it rather than exiting 0 on a no-op.
+                sys.stderr.write(
+                    "focus of %s was accepted but the pane is not focused; "
+                    "opening a new one.\n" % target)
+            else:
+                if confirmed is None:
+                    # Ambiguous, not failed. Opening here would mean a second
+                    # office pane on every invocation for anyone whose herdr
+                    # simply words the reply differently, which is worse than
+                    # the no-op; a line in `herdr plugin log` is enough to see
+                    # that the focus went unverified.
+                    sys.stderr.write(
+                        "focus of %s was accepted but herdr did not report "
+                        "the pane focused.\n" % target)
+                return 0
     try:
         protocol.request(sock, "plugin.pane.open",
                          {"plugin_id": plugin_id,
