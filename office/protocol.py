@@ -409,6 +409,31 @@ def pane_focus(sock_path: str, pane_id: str, timeout: float = 5.0):
     return request(sock_path, "pane.focus", {"pane_id": pane_id}, timeout=timeout)
 
 
+def pane_process_info(sock_path: str, pane_id: str, timeout: float = 5.0):
+    """What is actually running inside a pane (design.md section 3, issue #39).
+
+    The only honest answer to "is the office alive in there?". After a server
+    restart the pane frame and its label come back while the process does not,
+    and state.json can still claim `running: true` for a pid that no longer
+    exists - so a label, and even a fresh state file, prove nothing on their
+    own. The foreground process does.
+    """
+    return request(sock_path, "pane.process_info", {"pane_id": pane_id},
+                   timeout=timeout)
+
+
+def pane_close(sock_path: str, pane_id: str, timeout: float = 5.0):
+    """Close any pane, plugin-owned or not.
+
+    `plugin.pane.close` cannot be used for the restart case: herdr's record of
+    which panes belong to a plugin is not restored with them, so a pane this
+    plugin opened before the restart answers `plugin_pane_not_found` afterwards
+    (measured on 0.7.5). The generic method still closes it.
+    """
+    return request(sock_path, "pane.close", {"pane_id": pane_id},
+                   timeout=timeout)
+
+
 def workspace_list(sock_path: str, timeout: float = 5.0):
     """Workspaces with their labels (the office's room names, section 4).
 

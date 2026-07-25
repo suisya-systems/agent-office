@@ -11,10 +11,16 @@ id identifies the office pane outright. Both degrade cleanly without it:
 jump-blocked falls back to the pane_id tiebreak of section 6, and open just
 opens a new pane.
 
-The choosing is kept apart from the doing. `visible_panes()` and
-`pick_blocked()` answer "which pane should this target?" and are directly
-testable, while the `action_*` entry points own the socket calls and the exit
-codes. Messages are ASCII only (Windows cp932 safety).
+`agent-office.startup` is the third short-lived process here, run once per
+server start rather than by the user (issue #39): herdr restores the office
+pane's frame without re-running its command, and this is what puts the process
+back inside it.
+
+The choosing is kept apart from the doing. `visible_panes()`, `pick_blocked()`,
+`office_frames()` and `reclaimable_frame()` answer "which pane should this
+target?" and are directly testable, while the `action_*` entry points own the
+socket calls and the exit codes. Messages are ASCII only (Windows cp932
+safety).
 """
 
 import os
@@ -25,6 +31,7 @@ from . import protocol, statefile
 from .state import OfficeState
 
 PANE_TITLE = "Agent Office"          # manifest [[panes]].title == the pane label
+OFFICE_MODULE = "office"             # herdr spawns `<python> -m office run`
 
 
 def office_entrypoint(os_name=None):
@@ -144,11 +151,190 @@ def running_office_pane(panes, data):
     return None
 
 
+def office_frames(panes, data):
+    """Panes wearing this plugin's label, the recorded one first (issue #39).
+
+    `running_office_pane` answers the same question for action-open, but the
+    startup hook *closes* what it picks, so it cannot inherit that function's
+    willingness to act on state.json's recorded pane id by itself: a restart
+    may have handed that id to an unrelated pane, and closing a stranger's pane
+    over a stale record is not a risk worth taking to save a tab. Requiring the
+    label costs nothing here - 0.7.5 does report `label` in pane.list, and
+    `[[startup]]` does not exist before 0.7.5, so this code never runs on the
+    0.7.4 that lacks it.
+
+    The recorded id still decides the *order*, which is what settles matters if
+    more than one pane wears the label.
+    """
+    frames = [pane["pane_id"] for pane in panes
+              if pane.get("label") == PANE_TITLE and pane.get("pane_id")]
+    recorded = statefile.live_office_pane_id(data)
+    if recorded in frames:
+        frames.remove(recorded)
+        frames.insert(0, recorded)
+    return frames
+
+
+def _foreground(info):
+    """The `foreground_processes` of a pane.process_info reply, defensively."""
+    if not isinstance(info, dict):
+        return []
+    process_info = info.get("process_info")
+    if not isinstance(process_info, dict):
+        process_info = info                       # tolerate an unwrapped reply
+    procs = process_info.get("foreground_processes")
+    if not isinstance(procs, list):
+        return []
+    return [proc for proc in procs if isinstance(proc, dict)]
+
+
+def _shell_pid(info):
+    if not isinstance(info, dict):
+        return None
+    process_info = info.get("process_info")
+    if not isinstance(process_info, dict):
+        process_info = info
+    return process_info.get("shell_pid")
+
+
+def runs_office(info):
+    """Is an office process the pane's foreground process?
+
+    Matched on `-m office` rather than on the interpreter, because the manifest
+    spawns `python3` on unix and `py -3` on Windows and neither name is the
+    point. `argv` is what herdr reports; `cmdline` is consulted as well so a
+    herdr that fills in only the flat string cannot make a *live* office look
+    dead - that mistake would end with this hook closing a working office.
+    """
+    for proc in _foreground(info):
+        argv = proc.get("argv")
+        if isinstance(argv, list):
+            for flag, name in zip(argv, argv[1:]):
+                if flag == "-m" and name == OFFICE_MODULE:
+                    return True
+        cmdline = proc.get("cmdline")
+        if isinstance(cmdline, str) and "-m %s" % OFFICE_MODULE in cmdline:
+            return True
+    return False
+
+
+def reclaimable_frame(info):
+    """Does this pane hold nothing but the shell herdr restored it with?
+
+    True only for the litter issue #39 is about: a pane whose single foreground
+    process *is* the pane's own shell, sitting at a prompt. Anything else - a
+    command the user started in it, an office that is still running, a reply
+    that could not be read - answers False, because the caller's next move is
+    to close the pane and that is not undoable.
+    """
+    procs = _foreground(info)
+    if len(procs) != 1 or runs_office(info):
+        return False
+    shell_pid = _shell_pid(info)
+    return shell_pid is not None and procs[0].get("pid") == shell_pid
+
+
 # -- entry points (own the socket calls and the exit codes) --------------
+
+def _open_office(sock, focus):
+    """Ask herdr to launch the office pane.
+
+    `focus` is the caller's decision, and the two callers differ: action-open
+    is the user asking for the office and wants it in front, while the startup
+    hook runs with the user's own pane focused (HERDR_PANE_ID) and must leave
+    the focus exactly where it found it - moving it is the failure issue #21
+    was about, arriving by a different road.
+    """
+    plugin_id = os.environ.get("HERDR_PLUGIN_ID", "agent-office")
+    return protocol.request(sock, "plugin.pane.open",
+                            {"plugin_id": plugin_id,
+                             "entrypoint": office_entrypoint(),
+                             "focus": focus})
+
+
+def action_startup():
+    """Put the office process back after a server restart (issue #39).
+
+    herdr restores the *frame* of the office pane - label, cwd, tab position -
+    but does not re-run the manifest command, so what comes back is a bare
+    shell wearing the "Agent Office" label while the toasts, the escalations
+    and state.json are all gone. This hook is what notices.
+
+    Three things it deliberately does not do:
+
+    * **Open the office for someone who closed it.** A restored frame carrying
+      our label is the evidence that the office was open when the server went
+      down; no frame, no office. herdr not firing this hook at all for a
+      disabled plugin (measured) is the same principle one level up.
+    * **Trust state.json.** After a restart the file is still fresh and still
+      says `running: true`, naming a pane id that now resolves to the restored
+      frame - a dead office looks exactly like a live one from there. Only
+      `pane.process_info` can tell them apart, so that is what decides.
+    * **Take the focus.** The hook runs with the user's pane focused, and the
+      office is restored behind it.
+
+    Exit code 0 unless the open itself failed; herdr logs it either way
+    (`herdr plugin log list`), which is where a silent no-op becomes visible.
+    """
+    sock = _sock()
+    try:
+        panes = protocol.pane_list(sock)
+    except Exception as exc:                              # noqa: BLE001
+        # The office not coming back is bad; a startup hook that fails loudly
+        # on every server start is worse. Say why and leave it.
+        sys.stderr.write("pane.list failed: %s\n" % exc)
+        return 0
+
+    frames = office_frames(panes, _state())
+    if not frames:
+        return 0                    # the office was not open. Leave it closed.
+
+    stale = []
+    for pane_id in frames:
+        try:
+            info = protocol.pane_process_info(sock, pane_id)
+        except Exception as exc:                          # noqa: BLE001
+            sys.stderr.write("process_info of %s failed: %s\n" % (pane_id, exc))
+            info = None
+        if runs_office(info):
+            # A live handoff fires this hook too, and there the process
+            # survives (measured). Opening now would mean a second office -
+            # and two offices both escalating means two toasts per agent.
+            return 0
+        if reclaimable_frame(info):
+            stale.append(pane_id)
+
+    if not stale:
+        sys.stderr.write(
+            "office frame(s) %s are not idle shells; leaving them alone.\n"
+            % ", ".join(frames))
+        return 0
+
+    # Close first, open second. The other order would leave a duplicate behind
+    # whenever the close failed, and a duplicate is the one outcome issue #39
+    # rules out; a close that succeeds without its open leaves a plugin that is
+    # merely as dead as it already was, and says so in the log.
+    closed = []
+    for pane_id in stale:
+        try:
+            protocol.pane_close(sock, pane_id)
+        except Exception as exc:                          # noqa: BLE001
+            sys.stderr.write("close of %s failed: %s\n" % (pane_id, exc))
+        else:
+            closed.append(pane_id)
+    if not closed:
+        return 0
+
+    try:
+        _open_office(sock, focus=False)
+    except Exception as exc:                              # noqa: BLE001
+        sys.stderr.write("open failed: %s\n" % exc)
+        return 1
+    return 0
+
 
 def action_open():
     sock = _sock()
-    plugin_id = os.environ.get("HERDR_PLUGIN_ID", "agent-office")
     try:
         panes = protocol.pane_list(sock)
     except Exception:                                    # noqa: BLE001
@@ -181,10 +367,7 @@ def action_open():
                         "the pane focused.\n" % target)
                 return 0
     try:
-        protocol.request(sock, "plugin.pane.open",
-                         {"plugin_id": plugin_id,
-                          "entrypoint": office_entrypoint(),
-                          "focus": True})
+        _open_office(sock, focus=True)
     except Exception as exc:                              # noqa: BLE001
         sys.stderr.write("open failed: %s\n" % exc)
         return 1
