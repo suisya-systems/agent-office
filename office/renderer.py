@@ -602,9 +602,17 @@ class Renderer:
                 ("", " %s %s %s/%s" % (foc, textwidth.pad(label, 10),
                                        textwidth.truncate(room, 14), name)),
             ], cols))
-        header = self._fit(
-            [(self.accent + BOLD, "AGENT OFFICE (compact)  %d desks  %d blocked"
-              % (len(order), len(state.blocked_desks())))], cols)
+        # Same tail, same rule as `_header`: the compact view is reached by a
+        # short pane as readily as by a narrow one (rows < MIN_ROWS), so it is
+        # not a view the ? signpost can be left out of - and where the pane
+        # really is too narrow for both, the counts win and the hint goes.
+        readout = ("AGENT OFFICE (compact)  %d desks  %d blocked"
+                   % (len(order), len(state.blocked_desks())))
+        help_hint = "  " + KEY_HINT_SHORT
+        if textwidth.width(readout) + textwidth.width(help_hint) > cols:
+            help_hint = ""
+        header = self._fit([(self.accent + BOLD, readout),
+                            (DIM, help_hint)], cols)
         avail = rows - 1
         offset = 0
         sel_idx = anchors.get(state.selected_pane_id)

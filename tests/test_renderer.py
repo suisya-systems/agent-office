@@ -263,6 +263,30 @@ class HeaderHelpHintTest(unittest.TestCase):
         empty = without_help_hint(header_of(r.render(OfficeState(), 120, 40)))
         self.assertEqual(empty, "AGENT OFFICE  filter:agents  0 desks")
 
+    def test_the_compact_header_signposts_it_too(self):
+        """The compact view is reached by a *short* pane as well as a narrow
+        one, so it is not a corner the signpost can be missing from - a
+        120x20 pane has room for it and no other way to find the overlay."""
+        r = Renderer(tier=1, truecolor=True)
+        header = header_of(r.render(_state(), 120, 20, status="connected"))
+        self.assertIn("compact", header)
+        self.assertTrue(header.endswith(KEY_HINT_SHORT), repr(header))
+        self.assertEqual(without_help_hint(header),
+                         "AGENT OFFICE (compact)  2 desks  1 blocked")
+
+    def test_the_compact_header_drops_it_when_the_counts_need_the_room(self):
+        r = Renderer(tier=1, truecolor=True)
+        for cols in range(20, 121):
+            header = header_of(r.render(_state(), cols, 20))
+            self.assertLessEqual(tw.width(header), cols, repr(header))
+            if header.endswith(KEY_HINT_SHORT):
+                # It only ever appears behind the whole readout.
+                self.assertIn("1 blocked", header, repr(header))
+            else:
+                for cut in range(1, len(KEY_HINT_SHORT)):
+                    self.assertFalse(header.endswith(KEY_HINT_SHORT[:cut]),
+                                     "%d cols: cut short: %r" % (cols, header))
+
     def test_the_signpost_is_the_first_thing_a_narrow_pane_drops(self):
         """Priority order down the row: counts, scroll position, signpost.
 
