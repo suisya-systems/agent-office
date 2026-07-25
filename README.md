@@ -213,11 +213,19 @@ open keybinding lands in the office — and an `Enter` in that tail used to be
 obeyed as a jump, handing your focus straight back out again (issue #21). Press
 the key again once the office is on screen.
 
-A minimal hint — `? help | Enter jump | b blocked | q quit` — sits on the status
-line during normal operation, so the `?` overlay is discoverable. A real message
-(a config warning, toast delivery note, or last error) takes the row while it has
-something to say, and the hint returns once the row is clear. On a narrow pane the
-hint shrinks to `? help` or drops entirely rather than wrapping the row.
+A minimal `? help` hint sits at the end of the header line, so the `?` overlay is
+discoverable during normal operation. It is last on the row on purpose: the pane
+narrows from the right, so the signpost is what goes first and the readout the
+header exists for — `5 desks  1 blocked`, and the scroll position while the office
+is scrolled — is what survives. Like the scroll hint it is all-or-nothing, never
+cut mid-word.
+
+The bottom status line carries real messages (a config warning, toast delivery
+note, or last error) and, while it has nothing to say, the fuller
+`? help | Enter jump | b blocked | q quit` — shrinking to `? help` and then to
+nothing rather than wrapping a narrow row. Do not count on seeing it: a message
+holds the row until something replaces it, and the subscriber's `connected` notice
+arrives there in the first seconds of every session and stays.
 
 ## States and how they look
 
