@@ -263,6 +263,29 @@ class HeaderHelpHintTest(unittest.TestCase):
         empty = without_help_hint(header_of(r.render(OfficeState(), 120, 40)))
         self.assertEqual(empty, "AGENT OFFICE  filter:agents  0 desks")
 
+    def test_a_dropped_scroll_hint_leaves_no_room_for_the_signpost(self):
+        """The tail is strictly ordered, not filled first-fit.
+
+        A big scrolled fleet on a narrow pane can have a scroll hint too wide
+        to keep and still leave room for the shorter signpost. Taking it would
+        show a header with width to spare and nothing about where the office
+        is scrolled to - which reads as an office that is not scrolled.
+        Composed straight through `_header`, since the widths this needs are
+        four-digit desk counts.
+        """
+        r = Renderer(tier=1, truecolor=True)
+        readout = "AGENT OFFICE  filter:agents  2 desks  1 blocked"
+        wide = "  (scroll: 1000-1028 of 8000)"          # 29 columns
+        self.assertEqual(visible(r._header(_state(), 60, False, wide)),
+                         readout)
+        # And with room for the scroll hint but not for both, the hint stays
+        # and the signpost is the one that goes.
+        self.assertEqual(visible(r._header(_state(), 80, False, wide)),
+                         readout + wide)
+        # Room for everything: both.
+        self.assertEqual(visible(r._header(_state(), 90, False, wide)),
+                         readout + wide + "  " + KEY_HINT_SHORT)
+
     def test_the_compact_header_signposts_it_too(self):
         """The compact view is reached by a *short* pane as well as a narrow
         one, so it is not a corner the signpost can be missing from - a

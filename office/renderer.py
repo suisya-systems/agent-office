@@ -436,10 +436,16 @@ class Renderer:
         if muted:
             bits.append("muted")
         body = "  ".join(bits)
-        if hint and textwidth.width(body) + textwidth.width(hint) > cols:
-            hint = ""
         help_hint = "  " + KEY_HINT_SHORT
-        used = textwidth.width(body) + textwidth.width(hint)
+        used = textwidth.width(body)
+        if hint and used + textwidth.width(hint) > cols:
+            # Strictly ordered, not first-fit: the room a dropped scroll
+            # position leaves behind is not room the signpost may take. A
+            # header that says nothing about where the office is scrolled to
+            # and still has width to spare reads as an office that is not
+            # scrolled at all.
+            hint = help_hint = ""
+        used += textwidth.width(hint)
         if used + textwidth.width(help_hint) > cols:
             help_hint = ""
         return self._fit([(self.accent + BOLD, body),
