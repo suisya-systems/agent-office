@@ -353,8 +353,6 @@ class Office:
             self._overlay_retry_at = self.state.now() + GRAPHICS_RETRY_S
 
     def _handle_key(self, name):
-        cols, _ = self.screen.size()
-        per_row = self.renderer.per_row(cols)
         if name in ("q", "quit"):
             # "quit" is Ctrl+C/Ctrl+D. On unix the tty raises SIGINT before it
             # ever reaches us, but Windows hands the character straight over,
@@ -365,13 +363,13 @@ class Office:
         elif name == "?":
             self.show_help = not self.show_help
         elif name == "left" or name == "h":
-            self.state.move_selection(-1, 0, per_row)
+            self._move(-1, 0)
         elif name == "right" or name == "l":
-            self.state.move_selection(1, 0, per_row)
+            self._move(1, 0)
         elif name == "up" or name == "k":
-            self.state.move_selection(0, -1, per_row)
+            self._move(0, -1)
         elif name == "down" or name == "j":
-            self.state.move_selection(0, 1, per_row)
+            self._move(0, 1)
         elif name == "enter":
             self._jump(self.state.selected_pane_id)
         elif name == "b":
@@ -386,6 +384,32 @@ class Office:
         elif name == "s":
             self.muted = not self.muted
             self.escalator.muted = self.muted
+
+    def _move(self, dx, dy):
+        """Move the desk cursor over the layout the frame is drawn from.
+
+        The layout is *recomputed here*, from the state as it stands and the
+        pane size as it stands, rather than remembered from the last draw. A
+        key routinely arrives in the gap between a change and the frame that
+        reflects it - a resize, an `a` filter refresh landing, a pane.closed -
+        and a remembered layout would then move the cursor over desks that are
+        no longer where, or no longer what, it believes. Recomputing is a pure
+        read of the snapshot (office/layout.py) - one ordering pass over the
+        desks and a slice per island, the same work the next frame does anyway
+        - so the gap simply cannot open.
+
+        The same holds while the help overlay is up: the keys still move the
+        cursor, and the layout they move over is the office one waiting
+        underneath, which is what the user sees again on the next `?`.
+
+        Movement is committed through `select()`, so a desk that disappeared
+        between the layout and this line is refused rather than selected.
+        """
+        cols, rows = self.screen.size()
+        target = self.renderer.layout(self.state, cols, rows).move(
+            self.state.selected_pane_id, dx, dy)
+        if target:
+            self.state.select(target)
 
     def _jump(self, pane_id):
         """Ask for the focus; say nothing yet (issue #12).

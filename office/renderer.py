@@ -27,6 +27,13 @@ the terminal width, and scrolls vertically to keep the selection visible. When
 the terminal is too small for even one row of desks, it drops to a compact
 one-line-per-desk summary.
 
+**Where the desks sit is a value, not a side effect** (issue #27). `layout()`
+answers "which desk is drawn where" as a pure function of the state snapshot
+and the pane size (see office/layout.py); `_full` and `_compact` draw *from*
+that answer, and the input path asks the same question at key time to move the
+cursor. Neither view mode is special-cased outside this module: compact is a
+layout one desk wide.
+
 **Widths are display columns, never character counts** (issue #25). Every line
 here is composed the same way: measure and cut the *visible* text with
 `office.textwidth`, then colour what survived - see `_fit`. Doing it the other
@@ -39,6 +46,7 @@ import os
 import sys
 
 from . import sprites, textwidth, themes
+from .layout import MODE_COMPACT, build_compact, build_full
 
 RESET = "\x1b[0m"
 DIM = "\x1b[2m"
@@ -54,6 +62,16 @@ STATUS_VISUAL = {
 }
 
 MIN_COLS, MIN_ROWS = 80, 24
+
+# The smallest frame that is composed at all - a *floor*, not a threshold, and
+# therefore far below MIN_COLS / MIN_ROWS above rather than near them. Below
+# these the frame is not made to fit: it is composed at 20x6 and left to the
+# terminal, because nothing legible survives a pane that small and a floor
+# keeps every division below out of the degenerate cases. Panes between the two
+# pairs get the compact view. Named because two callers now depend on the exact
+# value: render() composes at it, and `layout()` has to answer for the same
+# frame render() would draw, clamp included (see Renderer._clamp).
+MIN_FRAME_COLS, MIN_FRAME_ROWS = 20, 6
 
 # Bottom-row key hint shown during normal operation when the status line has no
 # real message to carry (Issue #17). Kept minimal on purpose - the full key map
@@ -294,20 +312,46 @@ class Renderer:
             out.append(color + piece + RESET if color else piece)
         return "".join(out)
 
-    # -- public ---------------------------------------------------------
+    # -- geometry -------------------------------------------------------
+
+    def _clamp(self, cols, rows):
+        """The size the frame is actually composed at, for any pane size.
+
+        The one place the floor is applied. `render` and `layout` have to agree
+        about it exactly - a layout built for a different width than the frame
+        on screen wraps its rows in different places, which is the whole class
+        of bug issue #27 is about - so neither computes it itself. The "no line
+        exceeds cols" guarantee therefore holds for cols >= MIN_FRAME_COLS only.
+        """
+        return max(MIN_FRAME_COLS, cols), max(MIN_FRAME_ROWS, rows)
 
     def per_row(self, cols):
-        """Desks per row for the current width (used for cursor movement)."""
-        return max(1, (max(20, cols) + 1) // (self.block_w + 1))
+        """Desks per row at width `cols`, clamped exactly as `render` clamps."""
+        cols, _ = self._clamp(cols, MIN_FRAME_ROWS)
+        return max(1, (cols + 1) // (self.block_w + 1))
+
+    def is_compact(self, cols, rows):
+        """True when this pane size falls back to the one-line-per-desk view."""
+        cols, rows = self._clamp(cols, rows)
+        return cols < MIN_COLS or rows < MIN_ROWS or self.block_w + 1 > cols
+
+    # -- public ---------------------------------------------------------
+
+    def layout(self, state, cols, rows):
+        """Where every desk sits in the frame `render(state, cols, rows)` draws.
+
+        Pure: it reads the state snapshot and the pane size and keeps nothing,
+        which is what lets the input path call it at key time (office.py) and
+        get the layout that is on screen rather than a remembered one that a
+        resize, a filter change or a closed pane has since invalidated.
+        """
+        if self.is_compact(cols, rows):
+            return build_compact(state.ordered_desks())
+        return build_full(state.islands(), self.per_row(cols))
 
     def render(self, state, cols, rows, frame=0, muted=False, show_help=False,
                escalated=(), status="", show_hint=False):
-        # Below these the frame is not made to fit - it is composed at 20x6 and
-        # left to the terminal. Nothing legible survives a pane that small, and
-        # a floor keeps every division below out of the degenerate cases. The
-        # "no line exceeds cols" guarantee therefore holds for cols >= 20 only.
-        cols = max(20, cols)
-        rows = max(6, rows)
+        cols, rows = self._clamp(cols, rows)
         escalated = frozenset(escalated)
         self.sprite_boxes = []
         # A status line (config warnings, toast delivery hint, last error) takes
@@ -317,10 +361,16 @@ class Renderer:
         inner = max(3, rows - 1) if bottom else rows
         if show_help:
             body = self._help_lines(cols, inner)
-        elif cols < MIN_COLS or rows < MIN_ROWS or self.block_w + 1 > cols:
-            body = self._compact(state, cols, inner, frame, escalated)
         else:
-            body = self._full(state, cols, inner, frame, muted, escalated)
+            # Drawn from the same layout object the cursor moves over, so the
+            # two can never disagree about which desk is where (issue #27).
+            desks = self.layout(state, cols, rows)
+            if desks.mode == MODE_COMPACT:
+                body = self._compact(state, desks, cols, inner, frame,
+                                     escalated)
+            else:
+                body = self._full(state, desks, cols, inner, frame, muted,
+                                  escalated)
         if bottom:
             body = list(body[:inner])
             body += [""] * (inner - len(body))
@@ -399,16 +449,15 @@ class Renderer:
                      selected=desk.pane_id == state.selected_pane_id,
                      focused=desk.pane_id == state.focused_pane_id)
 
-    def _full(self, state, cols, rows, frame, muted, escalated=frozenset()):
-        per_row = max(1, (cols + 1) // (self.block_w + 1))
+    def _full(self, state, layout, cols, rows, frame, muted,
+              escalated=frozenset()):
         body = []
         anchors = {}                              # pane_id -> line index in body
         boxes = []                                # (body_row, col, pixel_rows)
-        for wid, label, desks in state.islands():
-            room = format_name(label, self.name_template)
+        for group in layout.groups:
+            room = format_name(group.label, self.name_template)
             body.append(self._fit([(DIM, "[ %s ]" % room)], cols))
-            for start in range(0, len(desks), per_row):
-                chunk = desks[start:start + per_row]
+            for chunk in group.rows:
                 block_lines = []
                 for column, desk in enumerate(chunk):
                     look = self._look(desk, state, frame, escalated)
@@ -509,10 +558,11 @@ class Renderer:
 
     # -- compact fallback ----------------------------------------------
 
-    def _compact(self, state, cols, rows, frame, escalated=frozenset()):
+    def _compact(self, state, layout, cols, rows, frame,
+                 escalated=frozenset()):
         body = []
         anchors = {}
-        order = state.ordered_desks()
+        order = layout.flat
         for desk in order:
             anchors[desk.pane_id] = len(body)
             visual, label, color_key = STATUS_VISUAL.get(

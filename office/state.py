@@ -318,19 +318,13 @@ class OfficeState:
         if pane_id in self.desks:
             self.selected_pane_id = pane_id
 
-    def move_selection(self, dx: int, dy: int, per_row: int) -> None:
-        """Move the cursor over the flat ordered grid laid out `per_row` wide."""
-        order = self.ordered_desks()
-        if not order:
-            return
-        per_row = max(1, per_row)
-        ids = [d.pane_id for d in order]
-        try:
-            idx = ids.index(self.selected_pane_id)
-        except ValueError:
-            idx = 0
-        idx = max(0, min(len(ids) - 1, idx + dx + dy * per_row))
-        self.selected_pane_id = ids[idx]
+    # Cursor movement deliberately does not live here. Which desk is "below"
+    # the selected one is a fact about the drawn frame - island grouping, row
+    # wrapping, which view mode is on screen - and OfficeState knows none of
+    # it. It used to be smuggled in as a `per_row` scalar, which is exactly
+    # how the model came to disagree with the renderer (issue #27). The office
+    # loop now asks office.layout.Layout for the neighbour and commits the
+    # answer here with `select()`.
 
     def select_next_blocked(self) -> Optional[Desk]:
         """Cycle selection to the next blocked desk (Tab)."""
