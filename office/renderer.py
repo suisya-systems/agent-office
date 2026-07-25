@@ -78,7 +78,10 @@ MIN_FRAME_COLS, MIN_FRAME_ROWS = 20, 6
 # stays in the ? overlay. ASCII only: the separator has to survive a cp932
 # console, where Screen's replace-fallback would otherwise punch a "?" through a
 # fancier glyph. KEY_HINT_SHORT is the graceful-degrade form for narrow panes -
-# it still surfaces the one key (?) that opens everything else.
+# it still surfaces the one key (?) that opens everything else, and it is what
+# the header carries (issue #34): the bottom row only shows a hint while it has
+# no message, and a connect notice arrives on it early and stays, so in normal
+# operation the ? overlay was discoverable from the header or not at all.
 KEY_HINT = "? help | Enter jump | b blocked | q quit"
 KEY_HINT_SHORT = "? help"
 
@@ -406,16 +409,23 @@ class Renderer:
         return "".join(out)
 
     def _header(self, state, cols, muted, hint=""):
-        """The top line, including any scroll hint.
+        """The top line: the readout, any scroll hint, then the `? help` hint.
 
-        The hint is composed *here* rather than appended by the caller: the two
+        The hints are composed *here* rather than appended by the caller: they
         share one line and therefore one width budget, and appending after the
         header had already been cut to `cols` overran the pane by the length of
         the hint - with plain ASCII, every time the office scrolled.
 
-        It is also all-or-nothing, the same rule `_status_line` applies to the
+        Each is also all-or-nothing, the same rule `_status_line` applies to the
         key hint. Half of "(scroll: 41-68 of 300)" is not a smaller readout,
         it is a wrong one, so a hint that does not fit is dropped entirely.
+
+        Order is priority order, because `_fit` spends the budget left to right
+        and because the tail is what a narrowing pane loses first. The readout
+        (desks / blocked) is the reason the line exists; the scroll hint says
+        which part of a scrolled office is on screen, which is state; `? help`
+        is a permanent signpost that the reader stops needing. So the signpost
+        goes last, and a pane too narrow for everything keeps the counts.
         """
         n = len(state.desks)
         blocked = len(state.blocked_desks())
@@ -428,8 +438,13 @@ class Renderer:
         body = "  ".join(bits)
         if hint and textwidth.width(body) + textwidth.width(hint) > cols:
             hint = ""
+        help_hint = "  " + KEY_HINT_SHORT
+        used = textwidth.width(body) + textwidth.width(hint)
+        if used + textwidth.width(help_hint) > cols:
+            help_hint = ""
         return self._fit([(self.accent + BOLD, body),
-                          (self.accent, hint)], cols)
+                          (self.accent, hint),
+                          (DIM, help_hint)], cols)
 
     # -- full layout ----------------------------------------------------
 

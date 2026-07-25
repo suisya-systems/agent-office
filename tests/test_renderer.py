@@ -22,6 +22,22 @@ def visible(line):
     return ANSI.sub("", line)
 
 
+def header_of(frame):
+    """The visible top line of a rendered frame."""
+    return visible(frame).split("\r\n")[0]
+
+
+def without_help_hint(header):
+    """The header with its trailing `? help` signpost removed (issue #34).
+
+    So that assertions about what the header *says* are not rewritten every
+    time the signpost is - it is a fixed tail, and never a prefix of one.
+    """
+    if header.endswith(KEY_HINT_SHORT):
+        return header[:-len(KEY_HINT_SHORT)].rstrip()
+    return header
+
+
 def _state():
     s = OfficeState()
     s.ingest_pane({"pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1",
@@ -206,6 +222,84 @@ class RenderSmokeTest(unittest.TestCase):
         self.assertIn("[ a2 ]", short)
 
 
+class HeaderHelpHintTest(unittest.TestCase):
+    """Issue #34: the header is what signposts the ? overlay.
+
+    The bottom row cannot be relied on for it. It carries a hint only while it
+    has no message, and the subscriber's `connected` notice lands there in the
+    first seconds of a session and does not expire (issue #35) - so in normal
+    operation the signpost was never on screen. The header carries its own, at
+    the tail, where a narrowing pane drops it before it drops the counts.
+    """
+
+    def test_the_header_signposts_the_overlay_on_every_tier(self):
+        for tier in (0, 1, 2):
+            frame = Renderer(tier=tier, truecolor=(tier != 0)).render(
+                _state(), 120, 40, status="connected", show_hint=True)
+            header = header_of(frame)
+            self.assertTrue(header.endswith(KEY_HINT_SHORT),
+                            "tier %d: %r" % (tier, header))
+            # The point of the change: the bottom row is occupied, as it is in
+            # normal operation, and the ? overlay is still discoverable.
+            self.assertNotIn(KEY_HINT, frame)
+
+    def test_the_signpost_survives_a_cp932_console(self):
+        KEY_HINT_SHORT.encode("cp932")
+        KEY_HINT_SHORT.encode("ascii")
+
+    def test_the_readout_is_unchanged(self):
+        """The counts the header exists for, pinned against the whole line.
+
+        Literal rather than a set of assertIns, so that a signpost that pushed
+        a field out, reordered the bits or ate a separator cannot pass.
+        """
+        r = Renderer(tier=1, truecolor=True)
+        plain = without_help_hint(header_of(r.render(_state(), 120, 40)))
+        self.assertEqual(plain, "AGENT OFFICE  filter:agents  2 desks  1 blocked")
+        muted = without_help_hint(
+            header_of(r.render(_state(), 120, 40, muted=True)))
+        self.assertEqual(
+            muted, "AGENT OFFICE  filter:agents  2 desks  1 blocked  muted")
+        empty = without_help_hint(header_of(r.render(OfficeState(), 120, 40)))
+        self.assertEqual(empty, "AGENT OFFICE  filter:agents  0 desks")
+
+    def test_the_signpost_is_the_first_thing_a_narrow_pane_drops(self):
+        """Priority order down the row: counts, scroll position, signpost.
+
+        `_fit` spends the width budget left to right, so where the signpost
+        sits *is* its priority. Last means a pane too narrow for everything
+        keeps the readout - and the signpost is all-or-nothing with it, since
+        a header trailing off in "? he" is noise, not a shorter hint.
+        """
+        s = OfficeState()
+        for i in range(40):
+            s.ingest_pane({"pane_id": "p%02d" % i, "workspace_id": "w1",
+                           "agent": "claude", "agent_status": "blocked"})
+        s.set_room_label("w1", "a-fairly-long-workspace-label-here")
+        r = Renderer(tier=1, truecolor=True)
+        signposted, gave_way = False, False
+        for cols in range(80, 121):
+            s.select("p39")
+            header = header_of(r.render(s, cols, 30, muted=True))
+            self.assertLessEqual(tw.width(header), cols, "%d cols: %r"
+                                 % (cols, header))
+            self.assertIn("40 desks", header, "%d cols: %r" % (cols, header))
+            self.assertIn("40 blocked", header, "%d cols: %r" % (cols, header))
+            if header.endswith(KEY_HINT_SHORT):
+                signposted = True
+                continue
+            for cut in range(1, len(KEY_HINT_SHORT)):
+                self.assertFalse(header.endswith(KEY_HINT_SHORT[:cut]),
+                                 "%d cols: signpost cut short: %r"
+                                 % (cols, header))
+            if "scroll:" in header:
+                gave_way = True
+        # Both branches must have been taken, or the sweep proves nothing.
+        self.assertTrue(signposted, "the signpost never fitted at any width")
+        self.assertTrue(gave_way,
+                        "the signpost never gave way to the scroll hint")
+
+
 def _ja_state(count=2, room=JA_ROOM):
     """A fleet whose names and room label are full-width."""
     s = OfficeState()
@@ -306,7 +400,9 @@ class DisplayWidthTest(unittest.TestCase):
             s.select("p39")
             frame = r.render(s, cols, 30, muted=True)
             self.assertFits(frame, cols, "%d cols:" % cols)
-            header = visible(frame).split("\r\n")[0]
+            # The `? help` signpost shares the row and sits behind the scroll
+            # hint; this test is about the scroll hint alone (issue #34).
+            header = without_help_hint(header_of(frame))
             if "scroll:" in header:
                 seen = True
                 self.assertTrue(header.endswith(")"),
