@@ -533,6 +533,130 @@ class ActionFeedbackTest(unittest.TestCase):
         self.assertIn("reconnecting", office._status())
 
 
+class ArrivalKeyTest(unittest.TestCase):
+    """Issue #21: the office must not obey keys the focus move brought with it.
+
+    herdr routes a keystroke to whichever pane holds the focus, so the tail of
+    what the user was typing when they hit the open keybinding is delivered
+    *into* the office - and an `enter` among it used to be obeyed as "jump to
+    the selected desk", handing the focus back out again 13ms after it arrived.
+
+    The clock is injected (OfficeState.now) so the window is stepped over
+    rather than slept through.
+    """
+
+    def office(self, focused=None):
+        office = make_office(Config(filter="all"))
+        office.commander = RecordingCommander()
+        self.clock = [1000.0]
+        office.state._now = lambda: self.clock[0]
+        office.state.reconcile_snapshot([{"pane_id": "p1", "agent": "claude"}])
+        if focused is not None:
+            office._handle(("focused", focused))
+        return office
+
+    def test_an_enter_arriving_with_the_focus_does_not_jump(self):
+        office = self.office(focused="self-pane")
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, [])
+        self.assertIn("arrived with the focus", office._status())
+
+    def test_the_same_enter_a_moment_later_does_jump(self):
+        office = self.office(focused="self-pane")
+        self.clock[0] += office_mod.FOCUS_GRACE_S
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, ["p1"])
+
+    def test_b_arriving_with_the_focus_does_not_jump_either(self):
+        # `b` reaches the same pane.focus by another route, and was a no-op in
+        # the reported incident only because nothing happened to be blocked.
+        office = self.office(focused="self-pane")
+        office.state.set_status("p1", "blocked")
+        office._handle(("key", "b"))
+        self.assertEqual(office.commander.focused, [])
+
+    def test_a_key_ahead_of_its_focus_event_is_ignored_too(self):
+        # The keystroke and pane.focused come down different threads, so the
+        # key can win the race. A pane that believes another pane is focused
+        # cannot be reading that pane's keyboard - the focus did move, and the
+        # event is merely still in flight behind the key it brought along.
+        office = self.office(focused="p1")
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, [])
+
+    def test_holding_the_focus_all_along_leaves_the_keys_alone(self):
+        # No focus gain, no window: a user sitting in the office keeps their
+        # keyboard even though pane.focused replays on every reconnect.
+        office = self.office(focused="self-pane")
+        self.clock[0] += 60.0
+        office._handle(("focused", "self-pane"))     # replayed, not a gain
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, ["p1"])
+
+    def test_regaining_the_focus_arms_the_window_again(self):
+        office = self.office(focused="self-pane")
+        self.clock[0] += 60.0
+        office._handle(("focused", "p1"))            # the user left
+        office._handle(("focused", "self-pane"))     # ...and came back
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, [])
+
+    def test_without_a_pane_id_the_keys_still_work(self):
+        # HERDR_PANE_ID unset: the office cannot tell its own focus from
+        # anyone else's, and a gate that cannot tell must not take the
+        # keyboard away.
+        office = Office("/nonexistent.sock", None, tier=1, truecolor=True,
+                        config=Config(filter="all"))
+        office.commander = RecordingCommander()
+        office.state.reconcile_snapshot([{"pane_id": "p1", "agent": "claude"}])
+        office._handle(("focused", "p1"))
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, ["p1"])
+
+    def test_every_key_is_dropped_not_just_the_jumping_ones(self):
+        # `q` would have closed the office, `a` reconfigured it. None of them
+        # were aimed at a frame the user had yet to see.
+        office = self.office(focused="self-pane")
+        for name in ("q", "a", "s", "?"):
+            office._handle(("key", name))
+        self.assertTrue(office.running)
+        self.assertEqual(office.state.filter_mode, "all")
+        self.assertFalse(office.muted)
+        self.assertFalse(office.show_help)
+
+    def test_a_reconnect_snapshot_repairs_a_focus_it_missed(self):
+        # pane.focused is lost while the lifecycle connection is down, and
+        # "another pane is focused" is read as "the focus is on its way here" -
+        # so without this the office would ignore its own keyboard for good.
+        office = self.office(focused="p1")
+        self.clock[0] += 60.0
+        office._handle(("snapshot", [
+            {"pane_id": "p1", "agent": "claude"},
+            {"pane_id": "self-pane", "focused": True},
+        ]))
+        self.assertEqual(office.state.focused_pane_id, "self-pane")
+        self.clock[0] += office_mod.FOCUS_GRACE_S
+        office._handle(("key", "enter"))
+        self.assertEqual(office.commander.focused, ["p1"])
+
+    def test_the_user_refresh_does_not_roll_the_focus_back(self):
+        # The panes behind `a` are a round trip old (issue #12); a pane.focused
+        # applied since is the newer truth.
+        office = self.office(focused="self-pane")
+        office._handle(("action", ("pane_list", [
+            {"pane_id": "p1", "agent": "claude", "focused": True},
+        ], None)))
+        self.assertEqual(office.state.focused_pane_id, "self-pane")
+
+    def test_the_focus_is_still_tracked_while_the_window_is_armed(self):
+        # The gate rides on top of set_focused; the renderer's lit floor must
+        # not lose track of who is focused because of it.
+        office = self.office(focused="p1")
+        self.assertEqual(office.state.focused_pane_id, "p1")
+        office._handle(("focused", "self-pane"))
+        self.assertEqual(office.state.focused_pane_id, "self-pane")
+
+
 class RecordingCommander:
     """Commander stand-in: records the asks, reports nothing back."""
 
@@ -614,6 +738,43 @@ class FrameCounter:
         pass
 
 
+class StartupArrivalTest(unittest.TestCase):
+    """The other half of issue #21: the office pane that has only just opened.
+
+    When no office was running, the open keybinding answers with
+    plugin.pane.open, so *this process* is the pane. The stray keystroke was
+    already buffered in the pty before stdin was first read, and the
+    pane.focused that would otherwise arm the window fired before the
+    Subscriber could connect - it is never seen. run() therefore arms the
+    window itself, on the ground that nothing has been drawn yet.
+    """
+
+    def setUp(self):
+        self.handlers = [(sig, signal.getsignal(sig))
+                         for sig in (getattr(signal, "SIGWINCH", None),
+                                     getattr(signal, "SIGTERM", None))
+                         if sig is not None]
+
+    def tearDown(self):
+        for sig, handler in self.handlers:
+            signal.signal(sig, handler)
+
+    def run_office(self):
+        office = make_office(Config(filter="all", fps=30))
+        office.subscriber = office.reconciler = office.input = StubThread()
+        office.notifier = StubThread()
+        office.writer = StubWriter()
+        office.commander = RecordingCommander()
+        office.screen = Screen(stream=FrameCounter(office, frames=3))
+        office.state.reconcile_snapshot([{"pane_id": "p1", "agent": "claude"}])
+        office.q.put(("key", "enter"))
+        office.run()
+        return office
+
+    def test_a_keystroke_buffered_before_the_first_frame_is_dropped(self):
+        self.assertEqual(self.run_office().commander.focused, [])
+
+
 class LoopKeepsTickingTest(unittest.TestCase):
     """Issue #12: a keypress whose socket call hangs must not stop the frames.
 
@@ -630,8 +791,15 @@ class LoopKeepsTickingTest(unittest.TestCase):
                          if sig is not None]
         self.stuck = StuckProtocol()
         commander_mod.protocol = self.stuck
+        # The subject here is the loop, not issue #21's arrival grace, and the
+        # key is on the queue before run() is even called - which run() rightly
+        # reads as "typed at an office that had drawn nothing". Take the window
+        # out so the enter stands for the deliberate keypress it stands in for.
+        self.real_grace = office_mod.FOCUS_GRACE_S
+        office_mod.FOCUS_GRACE_S = 0.0
 
     def tearDown(self):
+        office_mod.FOCUS_GRACE_S = self.real_grace
         self.stuck.release.set()
         commander_mod.protocol = self.real_protocol
         for sig, handler in self.handlers:
