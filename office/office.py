@@ -339,8 +339,6 @@ class Office:
         countdown.
         """
         self.state.reconcile_snapshot(panes, since_epoch=since_epoch)
-        if seed:
-            self._adopt_snapshot_focus(panes)
         if seed and self._seed_blocked:
             # design.md section 7: adopt the previous run's blocked_since so an
             # agent stuck before the office opened is not given a fresh
@@ -386,42 +384,6 @@ class Office:
             self._overlay_ok = False
             self._overlay_retry_at = self.state.now() + GRAPHICS_RETRY_S
 
-    def _adopt_snapshot_focus(self, panes):
-        """Learn from a pane.list that the focus is in fact *here* (#21).
-
-        pane.focused events are lost while the lifecycle connection is down,
-        and _arrived_with_focus reads "another pane is focused" as "the focus
-        is on its way here" - so a focus change missed during an outage would
-        leave the office ignoring its own keyboard with no way back. The
-        Subscriber re-snapshots on every (re)connect, which is exactly where
-        that loss happens, so the repair rides along with it.
-
-        **Only ever in that one direction**, which is what makes it safe to
-        take from a snapshot at all. Every pane.list here was fetched off-loop
-        a socket round-trip ago (issue #12) - the Reconciler's 60s sweep feeds
-        this same path - so its `focused` may already have been overtaken by a
-        pane.focused the loop has applied. Believing such a snapshot's *other*
-        pane would undo a real focus gain and take the keyboard away until the
-        next focus change; believing it about ourselves can only ever hand a
-        keypress through, and keys do not reach an unfocused pane anyway. Same
-        fail-open rule as _arrived_with_focus, for the same reason.
-
-        This corrects the *belief* and nothing else - no window is armed. A
-        snapshot is not a focus arrival: the gain it reports is of unknown age,
-        and any key that came with it was read from stdin and dealt with long
-        before this pane.list came home. Arming here could therefore only cost
-        a keypress the user aimed at an office they have been looking at for
-        some time.
-        """
-        me = self.state.self_pane_id
-        if not me or self.state.focused_pane_id == me:
-            return
-        for pane in panes:
-            if pane.get("focused") and pane.get("pane_id") == me:
-                self._unfocused_key_at = None
-                self.state.set_focused(me)
-                return
-
     def _note_focus(self, pane_id):
         """Track who holds the focus, and arm the grace on gaining it (#21).
 
@@ -451,12 +413,14 @@ class Office:
 
         The second is bounded to one FOCUS_GRACE_S from the first such key,
         because "the event is right behind" and "the event is never coming"
-        look identical from here and only the first is worth waiting out. Left
-        unbounded it would hand an outage the power to make a focused office
-        unusable: the lifecycle connection can be down for minutes, and a focus
-        move it slept through would drop every key until it came back - `q`
-        included, so the pane could not even be closed. A bound of one window
-        costs the same quarter-second either way.
+        look identical from here and only the first is worth waiting out. That
+        bound is the whole recovery: nothing else re-examines the belief, so a
+        pane.focused lost while the lifecycle connection was down stands until
+        the next one arrives. Left unbounded it would hand an outage the power
+        to make a focused office unusable - the connection can be down for
+        minutes, and every key would go, `q` included, so the pane could not
+        even be closed. Bounded, the whole outage costs the same quarter-second
+        as any other focus move.
 
         Everything falls back to "the user meant it" when the answer is not
         known - no self_pane_id (HERDR_PANE_ID unset), no focus seen yet, or the

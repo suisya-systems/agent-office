@@ -653,48 +653,23 @@ class ArrivalKeyTest(unittest.TestCase):
         self.assertFalse(office.muted)
         self.assertFalse(office.show_help)
 
-    def test_a_reconnect_snapshot_repairs_a_focus_it_missed(self):
-        # pane.focused is lost while the lifecycle connection is down, and
-        # "another pane is focused" is read as "the focus is on its way here" -
-        # so without this the office would ignore its own keyboard for good.
-        office = self.office(focused="p1")
-        self.clock[0] += 60.0
-        office._handle(("snapshot", [
-            {"pane_id": "p1", "agent": "claude"},
-            {"pane_id": "self-pane", "focused": True},
-        ]))
-        self.assertEqual(office.state.focused_pane_id, "self-pane")
-        # And with no window: a snapshot is not an arrival. The gain it reports
-        # is of unknown age and any key that came with it was read from stdin
-        # long before this pane.list came home, so arming one here could only
-        # cost a key the user aimed at an office they have been looking at.
-        office._handle(("key", "enter"))
-        self.assertEqual(office.commander.focused, ["p1"])
-
-    def test_a_stale_snapshot_never_rolls_the_focus_off_this_pane(self):
-        # Every pane.list here is a round trip old (issue #12) - the
-        # Reconciler's 60s sweep feeds the same path - so one that still shows
-        # another pane focused may simply have been overtaken. Believing it
-        # would undo a real focus gain and dead-end the keyboard.
+    def test_only_a_focus_event_moves_the_belief(self):
+        # The gate now reads focused_pane_id, so what may write it matters.
+        # Every pane.list is a socket round-trip old (issue #12) - the
+        # Subscriber's reconnect snapshot, the Reconciler's 60s sweep and the
+        # refresh behind `a` alike - and one that has been overtaken by a
+        # pane.focused would roll a real focus gain back. The stale belief that
+        # leaves behind is recovered by the bound in _arrived_with_focus, not by
+        # trusting a snapshot's `focused`.
         office = self.office(focused="self-pane")
-        self.clock[0] += office_mod.FOCUS_GRACE_S
         office._handle(("snapshot", [
             {"pane_id": "p1", "agent": "claude", "focused": True},
             {"pane_id": "self-pane"},
         ]))
-        self.assertEqual(office.state.focused_pane_id, "self-pane")
-        office._handle(("key", "enter"))
-        self.assertEqual(office.commander.focused, ["p1"])
-
-    def test_the_user_refresh_does_not_carry_focus_at_all(self):
-        # The panes behind `a` are the stalest of the three (issue #12) and are
-        # not trusted for the focus in either direction.
-        office = self.office(focused="p1")
         office._handle(("action", ("pane_list", [
-            {"pane_id": "p1", "agent": "claude"},
-            {"pane_id": "self-pane", "focused": True},
+            {"pane_id": "p1", "agent": "claude", "focused": True},
         ], None)))
-        self.assertEqual(office.state.focused_pane_id, "p1")
+        self.assertEqual(office.state.focused_pane_id, "self-pane")
 
     def test_the_focus_is_still_tracked_while_the_window_is_armed(self):
         # The gate rides on top of set_focused; the renderer's lit floor must
