@@ -44,8 +44,7 @@ which the python.org installer adds) on Windows.
 On Windows the action ids carry a `-windows` suffix (`agent-office.open-windows`
 and `agent-office.jump-blocked-windows`) because herdr requires unique ids and
 the manifest has to declare a separate entry per platform to name the right
-interpreter. Windows plugin support is in preview in herdr, and kitty graphics
-(tier 2) is unverified there, so leave `renderer` at its default.
+interpreter. Windows plugin support is in preview in herdr.
 
 **Install (marketplace publication pending):** once published under the
 `herdr-plugin` topic, install directly from GitHub:
@@ -113,7 +112,7 @@ reopen the office pane to apply changes.
 ```toml
 [office]
 filter = "agents"            # "agents" (only panes with a detected agent) | "all"
-renderer = "auto"            # "auto" | "unicode" (tier 1) | "ascii" (tier 0) | "kitty" (tier 2)
+renderer = "auto"            # "auto" | "unicode" (tier 1) | "ascii" (tier 0)
 fps = 2                      # animation ticks per second, 1..10
 theme = "default"            # "default" | "midnight" | "daylight"
 name_template = "{name}"     # "{name}" | "{name:last-segment}"
@@ -148,8 +147,8 @@ label like `claude-org/8f3a…/g7/project:agent-office/a2` into `a2`.
 by terminal display width, so a full-width (CJK) character takes the two
 columns it actually draws and the plate is cut on a character boundary rather
 than half way through one — which means the 16-column plate of the `unicode`
-and `kitty` renderers holds only eight Japanese characters (the `ascii`
-renderer's plate is 9 columns, so four). `plate_lines = 2` wraps the name onto
+renderer holds only eight Japanese characters (the `ascii` renderer's plate is
+9 columns, so four). `plate_lines = 2` wraps the name onto
 a second row for another plateful, at the cost of one row per desk (fewer desks
 fit vertically). The default of `1` leaves existing layouts exactly as they
 were.
@@ -159,21 +158,9 @@ a darker, neon-lit room; `daylight` is a bright one. Themes colour the sprites
 and the text (header, nameplates, status words), so they work on every
 renderer tier, including the ASCII one.
 
-**`renderer = "kitty"`** turns on tier 2, which draws the same office and then
-lays a real PNG over the characters for a crisper look. It is opt-in because it
-needs both of these, and falls back to `unicode` with a note on the status line
-whenever either is missing:
-
-- `[experimental] kitty_graphics = true` in your **herdr** config (off by
-  default), and
-- an outer terminal that speaks the kitty graphics protocol and reports its
-  cell size; herdr refuses with `cell_size_unavailable` when it cannot get
-  one (seen under WSL).
-
-The sprites are static in tier 2: herdr 0.7.4 has no streaming graphics call,
-so animating would mean re-sending an image every tick. The animated tier 1 art
-is still drawn underneath, so a terminal that quietly ignores the image leaves
-you with a normal, working office rather than a blank one.
+There is no tier 2 renderer at the moment; `auto` picks between `unicode` and
+`ascii`. Progress on a graphics tier is tracked in
+[#24](https://github.com/suisya-systems/agent-office/issues/24).
 
 ### Escalation behaviour
 
