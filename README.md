@@ -59,6 +59,12 @@ herdr plugin link /path/to/agent-office
 herdr plugin pane open --plugin agent-office --entrypoint office --placement tab
 ```
 
+On herdr 0.7.5 and later, `install` and `link` (and a plugin's enabled state) are
+**global to your user**, not scoped to one herdr session — linking a working copy
+points every session at it, including the one you are using for real work. If you
+installed Agent Office into a single named session on herdr 0.7.3, install or link
+it again once on 0.7.5.
+
 On Windows the pane id is `office-windows`, for the same reason the action ids
 differ; herdr answers `platform_unsupported` if you ask for the other one:
 
