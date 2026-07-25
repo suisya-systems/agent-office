@@ -134,6 +134,15 @@ class ConfigWiringTest(unittest.TestCase):
         office = make_office(Config(theme="midnight"))
         self.assertEqual(office.renderer.theme.name, "midnight")
 
+    def test_plate_lines_reaches_the_renderer(self):
+        """Validating the value in config.py is not enough: without this wire
+        the office would accept `plate_lines = 2` and still draw one row."""
+        office = make_office(Config(plate_lines=2))
+        self.assertEqual(office.renderer.plate_lines, 2)
+        self.assertEqual(office.renderer.block_h,
+                         office.renderer.art_rows + 5)
+        self.assertEqual(make_office(Config()).renderer.plate_lines, 1)
+
 
 class FakeSender:
     def __init__(self):

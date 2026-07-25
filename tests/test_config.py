@@ -5,10 +5,12 @@ Python 3.10 path is covered even when the tests run on 3.11+ where
 `config.parse_toml` prefers the stdlib `tomllib`.
 """
 
+import dataclasses
 import os
 import tempfile
 import unittest
 
+from office import cli
 from office import config as config_mod
 from office import minitoml
 from office.config import Config, from_mapping, load
@@ -20,6 +22,7 @@ filter = "all"
 renderer = "ascii"
 fps = 4
 name_template = "{name:last-segment}"
+plate_lines = 2
 
 [escalation]
 blocked_threshold_s = 30
@@ -43,7 +46,7 @@ class MiniTomlTest(unittest.TestCase):
         data = self.parse(SAMPLE)
         self.assertEqual(data["office"], {
             "filter": "all", "renderer": "ascii", "fps": 4,
-            "name_template": "{name:last-segment}"})
+            "name_template": "{name:last-segment}", "plate_lines": 2})
         self.assertEqual(data["escalation"], {
             "blocked_threshold_s": 30, "renotify_interval_s": 0,
             "sound": "none", "notify_done": True})
@@ -124,6 +127,7 @@ class FromMappingTest(unittest.TestCase):
         self.assertEqual(cfg.renderer, "ascii")
         self.assertEqual(cfg.fps, 4)
         self.assertEqual(cfg.name_template, "{name:last-segment}")
+        self.assertEqual(cfg.plate_lines, 2)
         self.assertEqual(cfg.blocked_threshold_s, 30.0)
         self.assertEqual(cfg.renotify_interval_s, 0.0)
         self.assertEqual(cfg.sound, "none")
@@ -170,6 +174,60 @@ class FromMappingTest(unittest.TestCase):
     def test_fps_is_clamped(self):
         self.assertEqual(from_mapping({"office": {"fps": 99}}).fps, 10)
         self.assertEqual(from_mapping({"office": {"fps": 0}}).fps, 1)
+
+    def test_plate_lines_defaults_to_one(self):
+        """The default must not move: it is the pre-issue-#25 desk height."""
+        self.assertEqual(Config().plate_lines, 1)
+        self.assertEqual(from_mapping({}).plate_lines, 1)
+
+    def test_plate_lines_accepts_one_and_two(self):
+        for value in (1, 2):
+            cfg = from_mapping({"office": {"plate_lines": value}})
+            self.assertEqual(cfg.plate_lines, value)
+            self.assertEqual(cfg.warnings, ())
+
+    def test_plate_lines_is_clamped_with_a_warning(self):
+        for value, expected in ((0, 1), (-3, 1), (3, 2), (99, 2)):
+            cfg = from_mapping({"office": {"plate_lines": value}})
+            self.assertEqual(cfg.plate_lines, expected, value)
+            self.assertEqual(len(cfg.warnings), 1, value)
+
+    def test_plate_lines_rejects_non_numbers(self):
+        cfg = from_mapping({"office": {"plate_lines": "two"}})
+        self.assertEqual(cfg.plate_lines, 1)
+        self.assertEqual(len(cfg.warnings), 1)
+
+    def test_plate_lines_is_a_known_key(self):
+        """A recognised key must not also be reported as an unknown one."""
+        cfg = from_mapping({"office": {"plate_lines": 2}})
+        self.assertEqual(cfg.warnings, ())
+
+    def test_config_check_reports_every_setting(self):
+        """cli.CONFIG_SECTIONS is a hand-written mirror of the dataclass, so a
+        new setting can be validated and still never show up in config-check.
+        One assertion keeps the two in step for every future key."""
+        listed = set()
+        for _section, keys in cli.CONFIG_SECTIONS:
+            listed.update(keys)
+        settings = {f.name for f in dataclasses.fields(Config)} - {"path",
+                                                                   "warnings"}
+        self.assertEqual(listed, settings)
+
+    def test_every_setting_is_in_a_known_key_list(self):
+        """The same drift, one module over: a key validated by from_mapping but
+        missing from _warn_unknown_keys is warned about on every load."""
+        for field in dataclasses.fields(Config):
+            if field.name in ("path", "warnings"):
+                continue
+            section = {"filter": "office", "renderer": "office",
+                       "fps": "office", "theme": "office",
+                       "name_template": "office", "plate_lines": "office",
+                       "workspaces": "include", "exclude_agents": "include",
+                       }.get(field.name, "escalation")
+            value = getattr(Config(), field.name)
+            value = list(value) if isinstance(value, tuple) else value
+            cfg = from_mapping({section: {field.name: value}})
+            self.assertEqual(cfg.warnings, (), field.name)
 
     def test_kitty_is_accepted_without_a_warning(self):
         """Availability is the server's answer, not the config file's.

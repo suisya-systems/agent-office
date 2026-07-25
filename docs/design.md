@@ -199,6 +199,10 @@ theme = "default"            # スプライトパレット名
 name_template = "{name}"     # ネームプレート整形。{name} は §4 の決定則の値。
                              # 例 "{name:last-segment}" は '/' 区切りの末尾要素のみ表示
                              # (claude-org の長い label 対策、§10)
+plate_lines = 1              # 1 | 2。ネームプレートの行数。全角は 2 桁幅で
+                             # 折り返すため tier1/2 の 16 桁プレートは日本語
+                             # 8 文字 (tier0 は 9 桁で 4 文字)。2 にすると
+                             # 1 デスクあたり 1 行増える (issue #25)
 
 [escalation]
 blocked_threshold_s = 90

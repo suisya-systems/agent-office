@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Tuple
 
 from . import minitoml, themes
+from .renderer import PLATE_LINES_MAX, PLATE_LINES_MIN
 
 try:                                              # Python 3.11+
     import tomllib as _tomllib
@@ -44,6 +45,7 @@ class Config:
     fps: int = 2
     theme: str = "default"
     name_template: str = "{name}"
+    plate_lines: int = 1
     # [escalation]
     blocked_threshold_s: float = 90.0
     renotify_interval_s: float = 300.0
@@ -126,6 +128,9 @@ def from_mapping(data, path="") -> Config:
         "name_template": _choice(office, "office", "name_template",
                                  defaults.name_template, NAME_TEMPLATES,
                                  warnings),
+        "plate_lines": _int_range(office, "office", "plate_lines",
+                                  defaults.plate_lines, PLATE_LINES_MIN,
+                                  PLATE_LINES_MAX, warnings),
         "blocked_threshold_s": _seconds(escalation, "escalation",
                                         "blocked_threshold_s",
                                         defaults.blocked_threshold_s,
@@ -143,7 +148,8 @@ def from_mapping(data, path="") -> Config:
                                     warnings),
     }
     _warn_unknown_keys(office, "office", warnings,
-                       ("filter", "renderer", "fps", "theme", "name_template"))
+                       ("filter", "renderer", "fps", "theme", "name_template",
+                        "plate_lines"))
     _warn_unknown_keys(escalation, "escalation", warnings,
                        ("blocked_threshold_s", "renotify_interval_s", "sound",
                         "notify_done"))

@@ -29,7 +29,8 @@ usage: python3 -m office [run|action-open|action-jump-blocked|config-check]
 """
 
 CONFIG_SECTIONS = (
-    ("office", ("filter", "renderer", "fps", "theme", "name_template")),
+    ("office", ("filter", "renderer", "fps", "theme", "name_template",
+                "plate_lines")),
     ("escalation", ("blocked_threshold_s", "renotify_interval_s", "sound",
                     "notify_done")),
     ("include", ("workspaces", "exclude_agents")),
