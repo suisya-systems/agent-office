@@ -11,7 +11,14 @@
 # simply never appear. Item-level `platforms` overrides the top-level list,
 # and ids have to be unique inside a plugin, hence the `-windows` twins.
 
-id = "agent-office"
+# The id carries the `herdr-` prefix because that is what the marketplace is
+# named by: of the published plugins carrying the `herdr-plugin` topic, most
+# spell themselves `herdr-<thing>`, and the repository was renamed to match.
+# The id is not cosmetic - herdr qualifies globally unique names as
+# `<id>.<action>` and roots the plugin's config directory at `<id>/`, so this
+# line is what `herdr-agent-office.open` and the config path in the README
+# both derive from.
+id = "herdr-agent-office"
 name = "Agent Office"
 version = "0.1.0"
 description = "Your agent fleet as a pixel-art office: see who's working, who's stuck, jump to them."

@@ -1,8 +1,8 @@
 """Single-shot herdr actions (design.md section 6).
 
-`agent-office.open` and `agent-office.jump-blocked` are global actions that
-must work whether or not the office pane is running, so each is a short-lived
-process: read `pane.list`, decide, issue one command, exit.
+`herdr-agent-office.open` and `herdr-agent-office.jump-blocked` are global
+actions that must work whether or not the office pane is running, so each is a
+short-lived process: read `pane.list`, decide, issue one command, exit.
 
 Both consult `state.json` (section 8) when an office process is actively
 writing it, which makes them exact rather than approximate - the recorded
@@ -11,8 +11,8 @@ id identifies the office pane outright. Both degrade cleanly without it:
 jump-blocked falls back to the pane_id tiebreak of section 6, and open just
 opens a new pane.
 
-`agent-office.startup` is the third short-lived process here, run once per
-server start rather than by the user (issue #39): herdr restores the office
+`herdr-agent-office.startup` is the third short-lived process here, run once
+per server start rather than by the user (issue #39): herdr restores the office
 pane's frame without re-running its command, and this is what puts the process
 back inside it.
 
@@ -271,7 +271,7 @@ def _open_office(sock, focus):
     the focus exactly where it found it - moving it is the failure issue #21
     was about, arriving by a different road.
     """
-    plugin_id = os.environ.get("HERDR_PLUGIN_ID", "agent-office")
+    plugin_id = os.environ.get("HERDR_PLUGIN_ID", "herdr-agent-office")
     return protocol.request(sock, "plugin.pane.open",
                             {"plugin_id": plugin_id,
                              "entrypoint": office_entrypoint(),

@@ -24,6 +24,9 @@
 - 0.7.5 の実測環境: WSL2 上の使い捨て headless セッション（検証後 delete 済み）。本番セッションには非破壊の読み取りのみ。
   手順は claude-org-ja `knowledge/raw/2026-07-25-herdr-headless-session-harness.md` と
   同 `2026-07-25-herdr-075-api-measurement.md`（0.7.5 実測で追加した隔離手法）を参照。
+- **本文中の `agent-office` は当時の plugin id**: 実測時（2026-07-24 / 07-25）の id は `agent-office` で、
+  公開直後に `herdr-agent-office` へ改名した。生ログと実測文はその時点の記録なので**当時の値のまま残す**
+  （現在の id に一括置換すると、実際には観測していない出力を観測したことにしてしまう）。
 - **未実測（推測で埋めていない項目）**: `agent.view` の mobile / mouse ナビゲーションへの影響（§9）、
   Windows での挙動全般、0.7.4 が未知の `[[startup]]` セクションを持つマニフェストを link できるか（§2）。
   （`[[startup]]` の live handoff 時の発火は Issue #39 で実測済み。§2 参照）
